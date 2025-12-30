@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import altair as alt
 from utils import fetch_standings, fetch_all_weekly_scores, get_current_week
 
 # --- PAGE CONFIGURATION ---
@@ -21,8 +22,8 @@ with st.spinner('Syncing with Yahoo Fantasy...'):
     df_history = pd.DataFrame(history_data)
 
 # --- TABS ---
-# We added "Rivalry & Records" as the 3rd tab
-tab1, tab2, tab3, tab4 = st.tabs(["🏆 Luck Index", "📊 Power Rankings", "⚔️ Rivalry & Records", "📈 Raw Data"])
+# We now have 5 tabs
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏆 Luck Index", "📊 Power Rankings", "⚔️ Rivalry", "📉 Trends", "📈 Raw Data"])
 
 # === TAB 1: THE LUCK INDEX ===
 with tab1:
@@ -82,10 +83,8 @@ with tab1:
                         min_value=-0.5,
                         max_value=0.5,
                     ),
-                    "All-Play Wins": st.column_config.NumberColumn(
-                        "Theoretical Wins",
-                        help="The number of wins you WOULD have if you played every team, every week."
-                    ),
+                    "All-Play Wins": st.column_config.NumberColumn("Theoretical Wins"),
+                    "All-Play Losses": st.column_config.NumberColumn("Theoretical Losses")
                 },
                 use_container_width=True,
                 hide_index=True
@@ -103,7 +102,6 @@ with tab1:
 # === TAB 2: POWER RANKINGS ===
 with tab2:
     st.header("📊 Power Rankings & Consistency")
-    st.write("A composite score combining **Average Points** and **Consistency**.")
     
     if not df_history.empty:
         power_stats = df_history.groupby('Team')['Score'].agg(['mean', 'std', 'min', 'max']).reset_index()
@@ -141,35 +139,19 @@ with tab2:
             size='Power Score' 
         )
 
-# === TAB 3: RIVALRY & RECORDS (NEW!) ===
+# === TAB 3: RIVALRY & RECORDS ===
 with tab3:
     st.header("⚔️ League Records & Superlatives")
     
     if not df_history.empty:
-        # 1. CALCULATE SUPERLATIVES
-        # Biggest Blowout
-        df_history['Margin'] = abs(df_history['Score'] - df_history['Score'].shift(-1)) # Only works if rows are paired, let's do a safer way
-        
-        # We need to find the opponent score for every row to calculate margin correctly
-        # Create a helper mapping
-        # Since our df has two rows per game (Team A vs B, and B vs A), we can find margin easily
-        # Actually, our fetch_all_weekly_scores already saves 'Score' and 'Opponent' but not 'Opponent Score'
-        # Let's re-calculate Opponent Score by looking at the dataframe
-        
-        # Simple Superlatives
+        # Superlatives
         high_score = df_history.loc[df_history['Score'].idxmax()]
         low_score = df_history.loc[df_history['Score'].idxmin()]
         
-        # Calculate margins for "Heartbreak" and "Blowout"
-        # We need to iterate carefully or merge
-        # Quick hack: We know the structure is Team A, Team B in pairs usually, but let's be safe
-        
-        # Let's display the "Hall of Fame / Shame"
         col1, col2, col3 = st.columns(3)
         col1.metric("🚀 Season High", f"{high_score['Score']} pts", high_score['Team'])
         col2.metric("📉 Season Low", f"{low_score['Score']} pts", low_score['Team'])
         
-        # Find "Heartbreak" (Highest score in a Loss)
         losses = df_history[df_history['Result'] == 'L']
         if not losses.empty:
             heartbreak = losses.loc[losses['Score'].idxmax()]
@@ -177,11 +159,10 @@ with tab3:
             
         st.divider()
 
-        # 2. HEAD TO HEAD MATRIX
+        # Head-to-Head Matrix
         st.subheader("Head-to-Head Matrix")
         st.write("Read **Row vs Column**. Green means the Row Team won.")
         
-        # Create a matrix
         teams = sorted(df_history['Team'].unique())
         matrix = pd.DataFrame(index=teams, columns=teams).fillna("-")
         
@@ -190,20 +171,61 @@ with tab3:
             for _, row in team_games.iterrows():
                 opp = row['Opponent']
                 result = row['Result']
-                
-                # We want to record W or L
-                # If they played multiple times, we might want to show record (e.g. "2-0")
-                # For now, let's just append the result
                 current_val = matrix.at[team, opp]
                 if current_val == "-":
                     matrix.at[team, opp] = result
                 else:
                     matrix.at[team, opp] += f", {result}"
         
-        # Display the matrix
         st.dataframe(matrix, use_container_width=True)
 
-# === TAB 4: RAW DATA ===
+# === TAB 4: TRENDS & VISUALS (NEW!) ===
 with tab4:
+    st.header("📉 Season Trends & Visuals")
+    
+    if not df_history.empty:
+        # 1. THE HORSE RACE (Cumulative Points)
+        st.subheader("🏁 The Horse Race (Cumulative Points)")
+        st.write("Trace the race for the scoring title week by week.")
+        
+        df_cumulative = df_history.copy()
+        df_cumulative = df_cumulative.sort_values(['Team', 'Week'])
+        df_cumulative['Total Points'] = df_cumulative.groupby('Team')['Score'].cumsum()
+        
+        st.line_chart(
+            df_cumulative,
+            x='Week',
+            y='Total Points',
+            color='Team'
+        )
+        
+        st.divider()
+        
+        # 2. BOX PLOTS (Score Distribution)
+        st.subheader("📦 Scoring Distribution (Box Plots)")
+        st.write("""
+        **How to read this:**
+        * **Box:** The middle 50% of scores (Normal performance).
+        * **Line:** Median score.
+        * **Whiskers:** Range of typical scores.
+        * **Dots:** Outliers (Boom/Bust weeks).
+        * **Short Box:** Consistent. **Tall Box:** Volatile.
+        """)
+        
+        chart = alt.Chart(df_history).mark_boxplot(extent='min-max').encode(
+            x=alt.X('Team:N', title=None),
+            y=alt.Y('Score:Q', title='Weekly Score', scale=alt.Scale(zero=False)),
+            color='Team:N'
+        ).properties(
+            height=500
+        ).configure_axis(
+            labelFontSize=12,
+            titleFontSize=14
+        )
+        
+        st.altair_chart(chart, use_container_width=True)
+
+# === TAB 5: RAW DATA ===
+with tab5:
     st.subheader("Raw Data Inspector")
     st.dataframe(df_history, use_container_width=True)
