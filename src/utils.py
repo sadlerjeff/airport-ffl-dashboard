@@ -1,6 +1,8 @@
 import os
 import json
+import time
 import streamlit as st
+import pandas as pd
 from requests_oauthlib import OAuth2Session
 from dotenv import load_dotenv
 
@@ -12,177 +14,188 @@ CLIENT_SECRET = os.getenv('YAHOO_CLIENT_SECRET')
 LEAGUE_ID = os.getenv('YAHOO_LEAGUE_ID')
 
 def get_yahoo_session():
-    """
-    Creates and returns an authenticated Yahoo OAuth2 session.
-    Prioritizes Streamlit Secrets (for Cloud), falls back to local file (for local testing).
-    """
     token = None
-
-    # 1. Try loading from Streamlit Secrets (Cloud Method)
-    # We wrap this in a try/except because accessing st.secrets locally crashes if no secrets file exists
     try:
         if "yahoo_token" in st.secrets:
             token = json.loads(st.secrets["yahoo_token"]["token_json"])
     except Exception:
-        # If secrets aren't found (like on your laptop), just ignore and try the file next
         pass
-            
-    # 2. Fallback to local file (Local Laptop Method)
     if not token and os.path.exists('yahoo_token.json'):
         with open('yahoo_token.json', 'r') as f:
             token = json.load(f)
-    
     if not token:
-        st.error("No token found! If running locally, run scripts/auth.py. If in cloud, check Secrets.")
+        st.error("No token found! Please run 'python scripts/auth.py'")
         return None
 
-    # Dummy updater for cloud (since we can't write back to secrets easily)
-    token_updater = lambda t: None 
+    def token_updater(new_token):
+        if os.path.exists('yahoo_token.json'):
+            with open('yahoo_token.json', 'w') as f:
+                json.dump(new_token, f)
 
-    yahoo = OAuth2Session(
-        CLIENT_ID,
-        token=token,
-        auto_refresh_url='https://api.login.yahoo.com/oauth2/get_token',
-        auto_refresh_kwargs={'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET},
-        token_updater=token_updater
-    )
-    return yahoo
+    extra = {'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET}
+    return OAuth2Session(CLIENT_ID, token=token, auto_refresh_url='https://api.login.yahoo.com/oauth2/get_token', auto_refresh_kwargs=extra, token_updater=token_updater)
 
 def fetch_standings():
-    """
-    Fetches the raw standings data from Yahoo API safely.
-    """
     yahoo = get_yahoo_session()
-    if not yahoo:
-        return []
-
+    if not yahoo: return []
     url = f'https://fantasysports.yahooapis.com/fantasy/v2/league/{LEAGUE_ID}/standings?format=json'
-    response = yahoo.get(url)
-    
-    if response.status_code != 200:
-        st.error(f"API Error {response.status_code}: {response.text}")
-        return []
-
-    data = response.json()
     try:
-        # Extract the list of teams
+        response = yahoo.get(url)
+        if response.status_code != 200: return []
+        data = response.json()
         league_data = data.get('fantasy_content', {}).get('league', [])
-        if len(league_data) < 2:
-            return []
-            
+        if len(league_data) < 2: return []
         teams_data = league_data[1].get('standings', [])[0].get('teams', {})
         count = teams_data.get('count', 0)
-        
         parsed_teams = []
         for i in range(count):
             team_wrapper = teams_data.get(str(i), {}).get('team', [])
-            
-            # Defaults
-            name = "Unknown Team"
-            logo = "https://s.yimg.com/cv/apiv2/default/nfl/nfl_1.png"
-            
-            # 1. Metadata Extraction
+            name, logo = "Unknown", ""
             if len(team_wrapper) > 0:
                 for item in team_wrapper[0]:
                     if isinstance(item, dict):
-                        if 'name' in item:
-                            name = item['name']
-                        if 'team_logos' in item:
-                            logos = item['team_logos']
-                            if isinstance(logos, list) and len(logos) > 0:
-                                logo = logos[0].get('url', logo)
-
-            # 2. Stats Extraction
-            stats = {}
-            if len(team_wrapper) > 2:
-                 stats = team_wrapper[2].get('team_standings', {})
-            
-            rank = stats.get('rank', 0)
-            outcome = stats.get('outcome_totals', {'wins': 0, 'losses': 0})
-            
-            wins = int(outcome.get('wins', 0))
-            losses = int(outcome.get('losses', 0))
-            points = float(stats.get('points_for', 0.0))
-            
+                        if 'name' in item: name = item['name']
+                        if 'team_logos' in item: logo = item['team_logos'][0].get('url', '')
+            stats = team_wrapper[2].get('team_standings', {}) if len(team_wrapper) > 2 else {}
+            try: rank = int(stats.get('rank', 0))
+            except: rank = 0
+            outcome = stats.get('outcome_totals', {})
             parsed_teams.append({
-                "Rank": rank,
-                "Team": name,
-                "W": wins,
-                "L": losses,
-                "Points": points,
-                "Logo": logo
+                "Rank": rank, "Team": name, 
+                "W": int(outcome.get('wins', 0)), "L": int(outcome.get('losses', 0)), "T": int(outcome.get('ties', 0)),
+                "PF": float(stats.get('points_for', 0)), "PA": float(stats.get('points_against', 0)), "Logo": logo
             })
-            
         return parsed_teams
-        
-    except Exception as e:
-        print(f"Error parsing data: {e}")
-        return []
+    except Exception: return []
 
 @st.cache_data(ttl=3600)
 def fetch_all_weekly_scores(current_week):
-    """
-    Fetches scoreboard data for every week up to the current week.
-    """
     yahoo = get_yahoo_session()
-    if not yahoo:
-        return []
-
+    if not yahoo: return []
     all_matchups = []
-    
-    # Create a progress bar in the UI
-    progress_text = "Analyzing historical data..."
-    my_bar = st.progress(0, text=progress_text)
-
     for week in range(1, current_week + 1):
-        my_bar.progress(week / current_week, text=f"Fetching Week {week} data...")
-        
         url = f'https://fantasysports.yahooapis.com/fantasy/v2/league/{LEAGUE_ID}/scoreboard;week={week}?format=json'
-        response = yahoo.get(url)
-        
-        if response.status_code == 200:
-            data = response.json()
-            try:
-                league_data = data.get('fantasy_content', {}).get('league', [])
-                scoreboard = league_data[1].get('scoreboard', {})
-                matchups = scoreboard.get('0', {}).get('matchups', {})
-                count = matchups.get('count', 0)
-
-                for i in range(count):
-                    matchup = matchups.get(str(i), {}).get('matchup', {})
-                    teams = matchup.get('0', {}).get('teams', {})
-                    
-                    # Team 0
-                    team0 = teams.get('0', {}).get('team', [])
-                    name0 = team0[0][2]['name']
-                    score0 = float(team0[1]['team_points']['total'])
-                    
-                    # Team 1
-                    team1 = teams.get('1', {}).get('team', [])
-                    name1 = team1[0][2]['name']
-                    score1 = float(team1[1]['team_points']['total'])
-
-                    all_matchups.append({'Week': week, 'Team': name0, 'Score': score0, 'Opponent': name1, 'Result': 'W' if score0 > score1 else 'L' if score0 < score1 else 'T'})
-                    all_matchups.append({'Week': week, 'Team': name1, 'Score': score1, 'Opponent': name0, 'Result': 'W' if score1 > score0 else 'L' if score1 < score0 else 'T'})
-
-            except Exception as e:
-                print(f"Error parsing week {week}: {e}")
-                continue
-    
-    my_bar.empty()
+        try:
+            r = yahoo.get(url)
+            if r.status_code == 200:
+                data = r.json()
+                matchups = data['fantasy_content']['league'][1]['scoreboard']['0']['matchups']
+                for i in range(matchups['count']):
+                    m = matchups[str(i)]['matchup']['0']['teams']
+                    t0, t1 = m['0']['team'], m['1']['team']
+                    s0, n0 = float(t0[1]['team_points']['total']), t0[0][2]['name']
+                    s1, n1 = float(t1[1]['team_points']['total']), t1[0][2]['name']
+                    all_matchups.append({'Week': week, 'Team': n0, 'Score': s0, 'Opponent': n1, 'Result': 'W' if s0>s1 else 'L' if s0<s1 else 'T'})
+                    all_matchups.append({'Week': week, 'Team': n1, 'Score': s1, 'Opponent': n0, 'Result': 'W' if s1>s0 else 'L' if s1<s0 else 'T'})
+        except: continue
     return all_matchups
 
 def get_current_week():
-    """Fetches the current week of the NFL season."""
     yahoo = get_yahoo_session()
-    if not yahoo:
-        return 1
-        
-    url = f'https://fantasysports.yahooapis.com/fantasy/v2/league/{LEAGUE_ID}?format=json'
+    if not yahoo: return 1
     try:
-        response = yahoo.get(url)
-        data = response.json()
-        current_week = data['fantasy_content']['league'][0]['current_week']
-        return int(current_week)
-    except:
-        return 1
+        url = f'https://fantasysports.yahooapis.com/fantasy/v2/league/{LEAGUE_ID}?format=json'
+        return int(yahoo.get(url).json()['fantasy_content']['league'][0]['current_week'])
+    except: return 1
+
+def find_key_recursive(data, target_key):
+    if isinstance(data, dict):
+        if target_key in data: return data[target_key]
+        for key, value in data.items():
+            result = find_key_recursive(value, target_key)
+            if result is not None: return result
+    elif isinstance(data, list):
+        for item in data:
+            result = find_key_recursive(item, target_key)
+            if result is not None: return result
+    return None
+
+# --- MANAGER EFFICIENCY (FINAL CUSTOM SETTINGS) ---
+@st.cache_data(ttl=3600) 
+def fetch_manager_efficiency(current_week, team_list):
+    yahoo = get_yahoo_session()
+    if not yahoo: return []
+    
+    efficiency_data = []
+    
+    # 1. Get Team Keys
+    url_keys = f'https://fantasysports.yahooapis.com/fantasy/v2/league/{LEAGUE_ID}/teams?format=json'
+    try:
+        r = yahoo.get(url_keys)
+        if r.status_code != 200: return []
+        team_map = {} 
+        teams_data = r.json()['fantasy_content']['league'][1]['teams']
+        for i in range(teams_data['count']):
+            t = teams_data[str(i)]['team']
+            team_map[t[0][0]['team_key']] = t[0][2]['name']
+    except Exception:
+        return []
+
+    # 2. Iterate Weeks
+    my_bar = st.progress(0, text="Calculating Best Lineups...")
+    total_steps = (current_week) * len(team_map)
+    step_count = 0
+
+    for week in range(1, current_week + 1):
+        for team_key, team_name in team_map.items():
+            step_count += 1
+            my_bar.progress(min(step_count / total_steps, 0.99), text=f"Analyzing Week {week}: {team_name}")
+            time.sleep(0.05) 
+            
+            url_roster = f'https://fantasysports.yahooapis.com/fantasy/v2/team/{team_key}/roster;week={week}/players/stats?format=json'
+            
+            try:
+                rr = yahoo.get(url_roster)
+                if rr.status_code != 200: continue
+                
+                roster = rr.json()['fantasy_content']['team'][1]['roster']['0']['players']
+                players = []
+                
+                for idx in range(roster['count']):
+                    p_data = roster[str(idx)]['player']
+                    
+                    points_obj = find_key_recursive(p_data, 'player_points')
+                    points = float(points_obj['total']) if points_obj else 0.0
+                    
+                    position = "BN"
+                    if isinstance(p_data, list) and len(p_data) > 0:
+                        position = find_key_recursive(p_data[0], 'display_position')
+                        if not position: position = "BN"
+                    
+                    players.append({'pos': position, 'points': points})
+                
+                # Optimization
+                players.sort(key=lambda x: x['points'], reverse=True)
+                used_indices = set()
+                
+                def pick_best(pos_list, count):
+                    picked = 0
+                    score = 0
+                    for i, p in enumerate(players):
+                        if i in used_indices: continue
+                        if picked >= count: break
+                        if p['pos'] in pos_list:
+                            score += p['points']
+                            used_indices.add(i)
+                            picked += 1
+                    return score
+
+                # --- LEAGUE SETTINGS: 3 WR, NO FLEX ---
+                max_pts = 0
+                max_pts += pick_best(['QB'], 1)
+                max_pts += pick_best(['WR'], 3) # Changed from 2 to 3
+                max_pts += pick_best(['RB'], 2)
+                max_pts += pick_best(['TE'], 1)
+                # max_pts += pick_best(['WR', 'RB', 'TE', 'W/R/T'], 1) # REMOVED FLEX
+                max_pts += pick_best(['K'], 1)
+                max_pts += pick_best(['DEF'], 1)
+                
+                if max_pts > 0:
+                    efficiency_data.append({'Week': week, 'Team': team_name, 'Max Points': max_pts})
+
+            except Exception as e:
+                print(f"Error {team_name} W{week}: {e}")
+                continue
+
+    my_bar.empty()
+    return efficiency_data
