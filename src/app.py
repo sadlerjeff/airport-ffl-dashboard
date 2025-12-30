@@ -87,7 +87,7 @@ elif page == "🍀 Luck Index":
                 total_losses += losses
             total_games = total_wins + total_losses
             win_pct = total_wins / total_games if total_games > 0 else 0.0
-            luck_stats.append({'Team': team, 'All-Play Wins': total_wins, 'All-Play Pct': win_pct})
+            luck_stats.append({'Team': team, 'All-Play Wins': total_wins, 'All-Play Losses': total_losses, 'All-Play Pct': win_pct})
         
         df_luck = pd.DataFrame(luck_stats)
         
@@ -95,7 +95,7 @@ elif page == "🍀 Luck Index":
             df_final = pd.merge(df_standings, df_luck, on='Team')
             df_final['Real Pct'] = df_final['W'] / (df_final['W'] + df_final['L'])
             df_final['Luck Factor'] = df_final['Real Pct'] - df_final['All-Play Pct']
-            df_display = df_final[['Team', 'W', 'L', 'All-Play Wins', 'Luck Factor']].sort_values('All-Play Wins', ascending=False)
+            df_display = df_final[['Team', 'W', 'L', 'All-Play Wins', 'All-Play Losses', 'Luck Factor']].sort_values('All-Play Wins', ascending=False)
             
             # --- COLOR LOGIC ---
             def color_luck(val):
@@ -112,6 +112,10 @@ elif page == "🍀 Luck Index":
                     "All-Play Wins": st.column_config.NumberColumn(
                         "Theoretical Wins",
                         help="Wins you WOULD have if you played every team, every week."
+                    ),
+                    "All-Play Losses": st.column_config.NumberColumn(
+                        "Theoretical Losses",
+                        help="Losses you WOULD have if you played every team, every week."
                     ),
                     "Luck Factor": st.column_config.NumberColumn(
                         "Luck Factor", 
