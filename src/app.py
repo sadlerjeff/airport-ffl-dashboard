@@ -16,7 +16,6 @@ page = st.sidebar.radio(
 st.title("🏈 Airport FFL Analytics Center")
 
 # --- DATA LOADING ---
-# Load data once at the top so it's available for all pages
 with st.spinner('Syncing with Yahoo Fantasy...'):
     standings_data = fetch_standings()
     df_standings = pd.DataFrame(standings_data)
@@ -32,6 +31,10 @@ with st.spinner('Syncing with Yahoo Fantasy...'):
 # =========================================================
 if page == "🏆 Standings":
     st.header("🏆 Official League Standings")
+    st.markdown("""
+    **Current official standings from Yahoo.** Rank is determined by Win/Loss record, with Total Points For (PF) acting as the tiebreaker.
+    """)
+    
     if not df_standings.empty:
         df_standings['Rank'] = pd.to_numeric(df_standings['Rank'], errors='coerce').fillna(100).astype(int)
         df_display = df_standings.sort_values('Rank')
@@ -57,6 +60,15 @@ if page == "🏆 Standings":
 # =========================================================
 elif page == "🍀 Luck Index":
     st.header(f"The Luck Index (Weeks 1-{analyze_week})")
+    st.info("""
+    **"Are you good, or are you just lucky?"**
+    This page calculates your **"Theoretical Record"** (All-Play). 
+    Instead of just playing one opponent, we simulate what your record would be if you played **every single team, every single week.**
+    
+    * **Green (Positive):** Lucky! Your actual record is better than your stats support.
+    * **Red (Negative):** Unlucky! You have a great team but keep running into buzzsaws.
+    """)
+    
     if not df_history.empty:
         luck_stats = []
         teams = df_history['Team'].unique()
@@ -85,8 +97,14 @@ elif page == "🍀 Luck Index":
             df_final['Luck Factor'] = df_final['Real Pct'] - df_final['All-Play Pct']
             df_display = df_final[['Team', 'W', 'L', 'All-Play Wins', 'Luck Factor']].sort_values('All-Play Wins', ascending=False)
             
+            # --- COLOR LOGIC ---
+            def color_luck(val):
+                color = '#d4edda' if val > 0 else '#f8d7da' if val < 0 else ''
+                text_color = 'green' if val > 0 else 'red' if val < 0 else 'black'
+                return f'background-color: {color}; color: {text_color}'
+
             st.dataframe(
-                df_display,
+                df_display.style.map(color_luck, subset=['Luck Factor']).format({"Luck Factor": "{:.2f}"}),
                 column_config={
                     "Team": st.column_config.TextColumn("Team"),
                     "W": st.column_config.NumberColumn("Real Wins", help="Your actual record."),
@@ -95,12 +113,9 @@ elif page == "🍀 Luck Index":
                         "Theoretical Wins",
                         help="Wins you WOULD have if you played every team, every week."
                     ),
-                    "Luck Factor": st.column_config.ProgressColumn(
-                        "Luck Meter", 
-                        format="%.2f", 
-                        min_value=-0.5, 
-                        max_value=0.5,
-                        help="Green = Lucky. Red = Unlucky."
+                    "Luck Factor": st.column_config.NumberColumn(
+                        "Luck Factor", 
+                        help="Positive = Lucky. Negative = Unlucky."
                     )
                 }, use_container_width=True, hide_index=True
             )
@@ -112,6 +127,13 @@ elif page == "🍀 Luck Index":
 # =========================================================
 elif page == "📊 Power Rankings":
     st.header("📊 Power Rankings")
+    st.markdown("""
+    **Who is actually the most dangerous team?**
+    This formula rewards high-scoring offenses but **penalizes** inconsistency (Boom/Bust teams).
+    
+    $$ \\text{Power Score} = \\text{Average Score} - (\\text{Volatility} \\times 0.5) $$
+    """)
+    
     if not df_history.empty:
         power_stats = df_history.groupby('Team')['Score'].agg(['mean', 'std', 'min', 'max']).reset_index()
         power_stats.columns = ['Team', 'Avg Score', 'Volatility', 'Min Score', 'Max Score']
@@ -137,6 +159,11 @@ elif page == "📊 Power Rankings":
 # =========================================================
 elif page == "⚔️ Rivalry":
     st.header("⚔️ League Records")
+    st.markdown("""
+    **The Trophy Case & The Head-to-Head Matrix.**
+    See who has the season high/low scores and check your lifetime record against any other manager.
+    """)
+    
     if not df_history.empty:
         high = df_history.loc[df_history['Score'].idxmax()]
         low = df_history.loc[df_history['Score'].idxmin()]
@@ -153,7 +180,7 @@ elif page == "⚔️ Rivalry":
         st.divider()
 
         st.subheader("Head-to-Head Matrix")
-        st.caption("Rows vs Columns. Green = Win, Red = Loss.")
+        st.caption("Rows are YOU, Columns are OPPONENTS. Green = Win, Red = Loss.")
         teams = sorted(df_history['Team'].unique())
         matrix = pd.DataFrame(index=teams, columns=teams).fillna("-")
         for team in teams:
@@ -177,6 +204,7 @@ elif page == "⚔️ Rivalry":
 # =========================================================
 elif page == "📉 Trends":
     st.header("📉 Season Trends")
+    st.info("A cumulative race for total points. See which teams are surging and which are flattening out.")
     if not df_history.empty:
         df_cum = df_history.sort_values(['Team', 'Week'])
         df_cum['Total Points'] = df_cum.groupby('Team')['Score'].cumsum()
@@ -189,26 +217,30 @@ elif page == "📉 Trends":
         st.altair_chart(c, use_container_width=True)
 
 # =========================================================
-# PAGE 6: MANAGER SKILL (The Problem Child - FIXED)
+# PAGE 6: MANAGER SKILL
 # =========================================================
 elif page == "🧠 Manager Skill":
     st.header("🧠 Manager Efficiency (The 'What-If' Machine)")
-    st.info("Calculating the 'Perfect Lineup' for every team, every week. This compares your Actual Score vs. Max Potential Score.")
+    st.info("""
+    **Who is the best at setting their lineup?**
+    This tool analyzes every roster for every week and calculates the **Perfect Lineup** you *could* have played.
+    
+    * **Efficiency %:** (Actual Score) ÷ (Perfect Score). 100% means you made zero mistakes.
+    * **Points Left on Bench:** The points difference between your starter and a bench player who outscored them.
+    """)
     
     # 1. Initialize Session State
     if 'efficiency_data' not in st.session_state:
         st.session_state.efficiency_data = None
 
     # 2. Logic: Handle Button Click
-    # Because we are using st.sidebar.radio, Streamlit KNOWS we are on this page.
-    # Even if it reloads, 'page' will still equal "🧠 Manager Skill".
     if st.session_state.efficiency_data is None:
         if st.button("Calculate Efficiency (Click to Run)"):
             with st.spinner("Analyzing bench points... this takes about 30-60 seconds..."):
                 if not df_history.empty:
                     teams_list = df_history['Team'].unique()
                     st.session_state.efficiency_data = fetch_manager_efficiency(analyze_week, teams_list)
-                    st.rerun() # This creates a clean reload, but KEEPS you on this page!
+                    st.rerun() 
     
     # 3. Display Data
     if st.session_state.efficiency_data:
@@ -263,7 +295,8 @@ elif page == "🧠 Manager Skill":
 # PAGE 7: RAW DATA
 # =========================================================
 elif page == "📈 Raw Data":
-    st.subheader("Raw Data Inspector")
+    st.header("📈 Raw Data Inspector")
+    st.markdown("This is the raw matchup data pulled directly from Yahoo. Useful for debugging.")
     st.dataframe(
         df_history, 
         use_container_width=True,
