@@ -181,7 +181,42 @@ elif page == "⚔️ Rivalry":
             heartbreak = losses.loc[losses['Score'].idxmax()]
             col3.metric("💔 Heartbreak Award", f"{heartbreak['Score']} pts", f"{heartbreak['Team']} (Lost)", help="Highest score that still resulted in a loss.")
         
-        st.divider()
+        # --- NEW METRICS: MARGINS ---
+        df_history['Margin'] = df_history['Score'] - df_history['Opponent Score']
+        df_history['AbsMargin'] = df_history['Margin'].abs()
+        
+        wins_only = df_history[df_history['Result'] == 'W']
+        
+        col4, col5, col6 = st.columns(3)
+        
+        if not wins_only.empty:
+            # 1. Largest Victory
+            best_win = wins_only.loc[wins_only['Margin'].idxmax()]
+            col4.metric(
+                "😤 Largest Victory", 
+                f"+{best_win['Margin']:.2f}", 
+                f"{best_win['Team']} ({best_win['Score']:.2f}) vs {best_win['Opponent']} ({best_win['Opponent Score']:.2f})", 
+                help="Biggest blowout win."
+            )
+            
+            # 2. Ugly Win
+            ugly_win = wins_only.loc[wins_only['Score'].idxmin()]
+            col6.metric(
+                "🥴 The Ugly Win",
+                f"{ugly_win['Score']} pts",
+                f"{ugly_win['Team']} vs {ugly_win['Opponent']}",
+                help="Lowest score that still resulted in a win."
+            )
+
+        if not df_history.empty:
+            # 3. Nail Biter
+            nail_biter = df_history.loc[df_history['AbsMargin'].idxmin()]
+            col5.metric(
+                "😬 The Nail Biter",
+                f"{nail_biter['AbsMargin']:.2f}",
+                f"{nail_biter['Team']} ({nail_biter['Score']:.2f}) vs {nail_biter['Opponent']} ({nail_biter['Opponent Score']:.2f})",
+                help="Closest game of the season."
+            )
 
         st.subheader("Head-to-Head Matrix")
         st.caption("Rows are YOU, Columns are OPPONENTS. Green = Win, Red = Loss.")

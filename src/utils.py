@@ -85,8 +85,8 @@ def fetch_all_weekly_scores(current_week):
                     t0, t1 = m['0']['team'], m['1']['team']
                     s0, n0 = float(t0[1]['team_points']['total']), t0[0][2]['name']
                     s1, n1 = float(t1[1]['team_points']['total']), t1[0][2]['name']
-                    all_matchups.append({'Week': week, 'Team': n0, 'Score': s0, 'Opponent': n1, 'Result': 'W' if s0>s1 else 'L' if s0<s1 else 'T'})
-                    all_matchups.append({'Week': week, 'Team': n1, 'Score': s1, 'Opponent': n0, 'Result': 'W' if s1>s0 else 'L' if s1<s0 else 'T'})
+                    all_matchups.append({'Week': week, 'Team': n0, 'Score': s0, 'Opponent': n1, 'Opponent Score': s1, 'Result': 'W' if s0>s1 else 'L' if s0<s1 else 'T'})
+                    all_matchups.append({'Week': week, 'Team': n1, 'Score': s1, 'Opponent': n0, 'Opponent Score': s0, 'Result': 'W' if s1>s0 else 'L' if s1<s0 else 'T'})
         except: continue
     return all_matchups
 
