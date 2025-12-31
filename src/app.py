@@ -40,8 +40,7 @@ df_history = pd.DataFrame()
 analyze_week = 1
 
 try:
-    # UPDATED LOADING TEXT HERE
-    with st.spinner("Crunching the numbers... Sorry, it's a lot of data, going to be a minute."):
+    with st.spinner('Crunching the numbers... Sorry, it\'s a lot of data, going to be a minute.'):
         # 1. Fetch Basic Standings & History
         standings_data = fetch_standings()
         df_standings = pd.DataFrame(standings_data)
@@ -62,7 +61,10 @@ try:
             # 2. Manager Efficiency
             if 'efficiency_data' not in st.session_state:
                 status_text.text("Analyzing Manager Decisions...")
-                st.session_state.efficiency_data = fetch_manager_efficiency(analyze_week, df_history['Team'].unique())
+                # FIX: Sort the unique teams alphabetically. 
+                # This ensures the cache key is stable even if Yahoo returns games in a different order.
+                stable_team_list = sorted(df_history['Team'].unique())
+                st.session_state.efficiency_data = fetch_manager_efficiency(analyze_week, stable_team_list)
             
             # 3. Positional Power
             if 'pos_data' not in st.session_state:
