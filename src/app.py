@@ -1,13 +1,31 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-from utils import fetch_standings, fetch_all_weekly_scores, get_current_week, fetch_manager_efficiency, fetch_draft_results, fetch_impact_analysis, fetch_projection_accuracy, fetch_positional_performance, fetch_draft_season_totals
+from utils import (
+    fetch_standings, 
+    fetch_all_weekly_scores, 
+    get_current_week, 
+    fetch_manager_efficiency, 
+    fetch_draft_results, 
+    fetch_impact_analysis, 
+    fetch_projection_accuracy, 
+    fetch_positional_performance, 
+    fetch_draft_season_totals,
+    get_yahoo_session, 
+    LEAGUE_ID 
+)
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Airport FFL Analytics", page_icon="🏈", layout="wide")
 
 # --- SIDEBAR NAVIGATION ---
 st.sidebar.title("🏈 Menu")
+
+# Add a manual Refresh button to the sidebar
+if st.sidebar.button("🔄 Refresh Data"):
+    st.cache_data.clear()
+    st.rerun()
+
 page = st.sidebar.radio(
     "Go to:",
     ["🏆 Standings", "🤖 Optimal Standings", "🍀 Luck Index", "📊 Power Rankings", "💪 Positional Power", "📉 Draft Analysis", "⚔️ Rivalry", "📉 Trends", "🧠 Manager Skill", "💎 Draft & Waivers", "📈 Raw Data"]
@@ -16,47 +34,64 @@ page = st.sidebar.radio(
 st.title("🏈 Airport FFL Analytics Center")
 
 # --- DATA LOADING (BULK) ---
-# We use a single spinner for all data fetching to prevent delay on tab switches
 status_text = st.empty()
-with st.spinner('Crunching the numbers... this may take a minute...'):
-    # 1. Fetch Basic Standings & History
-    standings_data = fetch_standings()
-    df_standings = pd.DataFrame(standings_data)
-    current_week = get_current_week()
-    analyze_week = max(1, current_week - 1) 
-    history_data = fetch_all_weekly_scores(analyze_week)
-    df_history = pd.DataFrame(history_data)
+df_standings = pd.DataFrame()
+df_history = pd.DataFrame()
+analyze_week = 1
 
-    # 2. Manager Efficiency
-    if 'efficiency_data' not in st.session_state:
-        if not df_history.empty:
-            status_text.text("Analyzing Manager Decisions...")
-            st.session_state.efficiency_data = fetch_manager_efficiency(analyze_week, df_history['Team'].unique())
-    
-    # 3. Positional Power
-    if 'pos_data' not in st.session_state:
-        status_text.text("Calculating Positional Strength...")
-        st.session_state.pos_data = fetch_positional_performance(analyze_week)
+try:
+    with st.spinner('Crunching the numbers...'):
+        # 1. Fetch Basic Standings & History
+        standings_data = fetch_standings()
+        df_standings = pd.DataFrame(standings_data)
 
-    # 4. Draft Analysis (Auto-Load)
-    if 'draft_scatter' not in st.session_state:
-        status_text.text("Evaluating Draft Class...")
-        draft_res = fetch_draft_results()
-        st.session_state.draft_scatter = fetch_draft_season_totals(draft_res)
-    
-    # 5. Impact Analysis (WAR) (Auto-Load)
-    if 'impact_data' not in st.session_state:
-        status_text.text("Calculating Wins Above Replacement (WAR)...")
-        draft = fetch_draft_results() # Quick cache hit
-        impact = fetch_impact_analysis(analyze_week)
-        d_gems, w_gems = [], []
-        for p in impact:
-            if p['Player Key'] in draft: 
-                p.update(draft[p['Player Key']]); d_gems.append(p)
-            else: w_gems.append(p)
-        st.session_state.impact_data = {'draft': d_gems, 'waiver': w_gems}
+        current_week = get_current_week()
+        analyze_week = max(1, current_week - 1) 
+        
+        history_data = fetch_all_weekly_scores(analyze_week)
+        df_history = pd.DataFrame(history_data)
+
+        # CRITICAL CHECK: If main data is empty, stop here and ask for retry
+        if df_history.empty or df_standings.empty:
+            st.warning("⚠️ League data could not be loaded. This often happens if the Yahoo token is expired or the API connection failed.")
+            if st.button("Retry Connection"):
+                st.cache_data.clear()
+                st.rerun()
+        else:
+            # 2. Manager Efficiency
+            if 'efficiency_data' not in st.session_state:
+                status_text.text("Analyzing Manager Decisions...")
+                st.session_state.efficiency_data = fetch_manager_efficiency(analyze_week, df_history['Team'].unique())
+            
+            # 3. Positional Power
+            if 'pos_data' not in st.session_state:
+                status_text.text("Calculating Positional Strength...")
+                st.session_state.pos_data = fetch_positional_performance(analyze_week)
+
+            # 4. Draft Analysis (Auto-Load)
+            if 'draft_scatter' not in st.session_state:
+                status_text.text("Evaluating Draft Class...")
+                draft_res = fetch_draft_results()
+                st.session_state.draft_scatter = fetch_draft_season_totals(draft_res)
+            
+            # 5. Impact Analysis (WAR) (Auto-Load)
+            if 'impact_data' not in st.session_state:
+                status_text.text("Calculating Wins Above Replacement (WAR)...")
+                draft = fetch_draft_results() 
+                impact = fetch_impact_analysis(analyze_week)
+                d_gems, w_gems = [], []
+                if impact:
+                    for p in impact:
+                        if p['Player Key'] in draft: 
+                            p.update(draft[p['Player Key']]); d_gems.append(p)
+                        else: w_gems.append(p)
+                st.session_state.impact_data = {'draft': d_gems, 'waiver': w_gems}
+
+except Exception as e:
+    st.error(f"An error occurred during data loading: {e}")
 
 status_text.empty() # Clear loading text
+
 
 # =========================================================
 # PAGE 1: STANDINGS
@@ -67,6 +102,8 @@ if page == "🏆 Standings":
     if not df_standings.empty:
         df_standings['Rank'] = pd.to_numeric(df_standings['Rank'], errors='coerce').fillna(100).astype(int)
         st.dataframe(df_standings.sort_values('Rank')[['Rank', 'Team', 'W', 'L', 'T', 'PF', 'PA']], use_container_width=True, hide_index=True)
+    else:
+        st.write("No standings data available.")
 
 # =========================================================
 # PAGE 2: OPTIMAL STANDINGS
@@ -84,38 +121,39 @@ elif page == "🤖 Optimal Standings":
     if 'efficiency_data' in st.session_state and st.session_state.efficiency_data:
         df_eff = pd.DataFrame(st.session_state.efficiency_data)
         
-        # Merge Schedule with Max Points
-        schedule = df_history[['Week', 'Team', 'Opponent']].drop_duplicates()
-        
-        # 1. Get My Max Points
-        sim_data = pd.merge(schedule, df_eff[['Week', 'Team', 'Max Points']], on=['Week', 'Team'], how='left')
-        # 2. Get Opponent's Max Points
-        sim_data = pd.merge(sim_data, df_eff[['Week', 'Team', 'Max Points']], left_on=['Week', 'Opponent'], right_on=['Week', 'Team'], suffixes=('', '_Opp'), how='left')
-        
-        # 3. Calculate Hypothetical Result
-        sim_data['Optimal Win'] = sim_data['Max Points'] > sim_data['Max Points_Opp']
-        
-        # 4. Aggregate Season Totals
-        optimal_standings = sim_data.groupby('Team').agg(
-            Optimal_Wins=('Optimal Win', 'sum'),
-            Potential_PF=('Max Points', 'sum')
-        ).reset_index()
-        
-        # 5. Merge with Actual Standings for comparison
-        final_comp = pd.merge(optimal_standings, df_standings[['Team', 'W', 'Rank']], on='Team')
-        final_comp['Diff'] = final_comp['Optimal_Wins'] - final_comp['W']
-        
-        st.dataframe(
-            final_comp.sort_values('Optimal_Wins', ascending=False),
-            column_config={
-                "Optimal_Wins": st.column_config.NumberColumn("Optimal Wins", format="%d"),
-                "W": st.column_config.NumberColumn("Actual Wins", format="%d"),
-                "Diff": st.column_config.NumberColumn("Luck Factor (Wins)", format="%+d", help="Negative means you won games you 'should' have lost (Good Luck). Positive means you lost games you could have won (Bad Management/Luck)."),
-                "Potential_PF": st.column_config.NumberColumn("Max Potential PF", format="%.1f")
-            },
-            use_container_width=True,
-            hide_index=True
-        )
+        if not df_eff.empty and not df_history.empty:
+            # Merge Schedule with Max Points
+            schedule = df_history[['Week', 'Team', 'Opponent']].drop_duplicates()
+            
+            # 1. Get My Max Points
+            sim_data = pd.merge(schedule, df_eff[['Week', 'Team', 'Max Points']], on=['Week', 'Team'], how='left')
+            # 2. Get Opponent's Max Points
+            sim_data = pd.merge(sim_data, df_eff[['Week', 'Team', 'Max Points']], left_on=['Week', 'Opponent'], right_on=['Week', 'Team'], suffixes=('', '_Opp'), how='left')
+            
+            # 3. Calculate Hypothetical Result
+            sim_data['Optimal Win'] = sim_data['Max Points'] > sim_data['Max Points_Opp']
+            
+            # 4. Aggregate Season Totals
+            optimal_standings = sim_data.groupby('Team').agg(
+                Optimal_Wins=('Optimal Win', 'sum'),
+                Potential_PF=('Max Points', 'sum')
+            ).reset_index()
+            
+            # 5. Merge with Actual Standings for comparison
+            final_comp = pd.merge(optimal_standings, df_standings[['Team', 'W', 'Rank']], on='Team')
+            final_comp['Diff'] = final_comp['Optimal_Wins'] - final_comp['W']
+            
+            st.dataframe(
+                final_comp.sort_values('Optimal_Wins', ascending=False),
+                column_config={
+                    "Optimal_Wins": st.column_config.NumberColumn("Optimal Wins", format="%d"),
+                    "W": st.column_config.NumberColumn("Actual Wins", format="%d"),
+                    "Diff": st.column_config.NumberColumn("Luck Factor (Wins)", format="%+d", help="Negative means you won games you 'should' have lost (Good Luck). Positive means you lost games you could have won (Bad Management/Luck)."),
+                    "Potential_PF": st.column_config.NumberColumn("Max Potential PF", format="%.1f")
+                },
+                use_container_width=True,
+                hide_index=True
+            )
     else:
         st.warning("Could not calculate optimal standings. Ensure data is loaded correctly.")
 
@@ -236,48 +274,130 @@ elif page == "💪 Positional Power":
 # PAGE 6: DRAFT ANALYSIS (SCATTER PLOT)
 # =========================================================
 elif page == "📉 Draft Analysis":
-    st.header("📉 Draft Steals & Busts")
+    st.header("📉 Draft & Keeper Analysis")
     st.info("""
-    **Draft Efficiency:** Analyzing the total season output of every draft pick.
-    * **The Goal:** Find players in the **Bottom-Right** (Low Pick #, High Points). These are the League Winners.
-    * **The Trap:** Avoid players in the **Top-Left** (High Pick #, Low Points). These are the Busts.
+    **Draft Efficiency:** Analyzing the return on investment for every player.
+    * **🛡️ Keepers (Left):** The foundation of your team. The higher the dot, the more value they retained.
+    * **📉 Draft Picks (Right):**
+        * **💎 The Steals (Top-Right):** Players drafted late who scored high. These win leagues.
+        * **💣 The Busts (Bottom-Left):** Players drafted early who scored low. These lose leagues.
     """)
     
-    # Check if data exists in session state (it should be pre-loaded)
-    if 'draft_scatter' in st.session_state and st.session_state.draft_scatter:
+    # 1. Check if data key exists
+    data_missing = 'draft_scatter' not in st.session_state
+    
+    # 2. Check if data is empty (loaded but found nothing)
+    data_empty = False
+    if not data_missing:
+        if isinstance(st.session_state.draft_scatter, list) and len(st.session_state.draft_scatter) == 0:
+            data_empty = True
+
+    # 3. Main Logic
+    if not data_missing and not data_empty:
         df_draft = pd.DataFrame(st.session_state.draft_scatter)
+        
+        # --- MERGE REAL TEAM NAMES (DRAFT) ---
+        if not df_standings.empty and 'Team Key' in df_standings.columns:
+            df_names = df_standings[['Team', 'Team Key']].rename(columns={'Team': 'Team Name'})
+            if 'Team Key' in df_draft.columns:
+                df_draft = pd.merge(df_draft, df_names, on='Team Key', how='left')
+                df_draft['Team Name'] = df_draft['Team Name'].fillna(df_draft['Team Key'])
+            else:
+                df_draft['Team Name'] = "Unknown"
+        else:
+             df_draft['Team Name'] = df_draft['Team Key'] if 'Team Key' in df_draft.columns else "Unknown"
+
+        # --- PRE-PROCESSING: CALCULATE 'VISUAL SLOT' ---
+        league_size = len(df_standings) if not df_standings.empty else 12
+        
+        def calculate_visual_slot(row):
+            # 1. Keepers: Fixed to the far left (negative value)
+            if row['Type'] == 'Keeper':
+                return -15 # Visual gap to the left
+            
+            # 2. Regular Draft: Actual Pick Number
+            return (row['Round'] - 1) * league_size + row['Pick']
+
+        df_draft['Visual Slot'] = df_draft.apply(calculate_visual_slot, axis=1)
+
+        # --- FILTERS (STANDARD DROPDOWNS) ---
+        with st.expander("🔎 Filter Options", expanded=True):
+            c1, c2, c3 = st.columns(3)
+            
+            # 1. Type Filter (Selectbox)
+            with c1:
+                acq_types = ["All Players", "Regular Draft", "Keepers"]
+                filter_type = st.selectbox("Type:", acq_types)
+            
+            # 2. Position Filter (Selectbox)
+            with c2:
+                # Get unique positions, sort, and add "All"
+                unique_pos = sorted([x for x in df_draft['Position'].unique() if x])
+                pos_options = ["All Positions"] + unique_pos
+                selected_pos = st.selectbox("Position:", pos_options)
+                
+            # 3. Team Filter (Selectbox)
+            with c3:
+                unique_teams = sorted([str(x) for x in df_draft['Team Name'].unique() if x])
+                team_options = ["All Teams"] + unique_teams
+                selected_team = st.selectbox("Team:", team_options)
+
+            # 4. Color By Preference
+            color_by = st.selectbox("Color Bubbles By:", ["Position", "Team Name", "Type"], index=0)
+
+        # --- APPLY FILTERS ---
+        # Type
+        if filter_type == "Regular Draft":
+            df_draft = df_draft[df_draft['Type'] == 'Regular']
+        elif filter_type == "Keepers":
+            df_draft = df_draft[df_draft['Type'] == 'Keeper']
+        
+        # Position
+        if selected_pos != "All Positions":
+            df_draft = df_draft[df_draft['Position'] == selected_pos]
+            
+        # Team
+        if selected_team != "All Teams":
+            df_draft = df_draft[df_draft['Team Name'] == selected_team]
+
+        # --- SCATTER PLOT ---
         if not df_draft.empty:
-            
-            # --- FILTER SECTION ---
-            st.markdown("### View Selection")
-            filter_option = st.radio("Filter:", ["All Players", "Regular Draft Only", "Keepers Only"], horizontal=True)
-            
-            if filter_option == "Regular Draft Only":
-                df_draft = df_draft[df_draft['Type'] == 'Regular']
-            elif filter_option == "Keepers Only":
-                df_draft = df_draft[df_draft['Type'] == 'Keeper']
-            
-            # Recalculate Pick visually for the chart (All Keepers are Round 0)
-            league_size = len(df_standings) if not df_standings.empty else 12
-            df_draft['Overall Pick'] = (df_draft['Round'] - 1) * league_size + df_draft['Pick']
-            
-            # --- SCATTER PLOT WITH KEEPER SHAPES ---
             chart = alt.Chart(df_draft).mark_point(filled=True, size=100).encode(
-                x=alt.X('Overall Pick', title='Draft Position (0=Keeper)'),
-                y=alt.Y('Total Points', title='Total Season Points'),
-                color='Position',
-                shape=alt.Shape('Type', title='Selection Type'), 
-                tooltip=['Player', 'Position', 'Round', 'Pick', 'Total Points', 'Type']
+                x=alt.X('Visual Slot', title='Draft Order (Left=Keepers, Right=Late Rounds)', scale=alt.Scale(zero=False)),
+                y=alt.Y('Total Points', title='Season Total Points', scale=alt.Scale(zero=False)),
+                color=alt.Color(color_by, title=color_by),
+                shape=alt.Shape('Type', title='Type'), 
+                tooltip=['Player', 'Position', 'Round', 'Total Points', 'Type', 'Team Name']
             ).properties(height=600).interactive()
             
             st.altair_chart(chart, use_container_width=True)
             
             st.divider()
-            st.subheader("💎 Top 10 Best Values (Points per Draft Slot)")
-            df_draft['Value Score'] = df_draft['Total Points'] * (df_draft['Overall Pick'] + 1) # Prevent 0 mult
-            st.dataframe(df_draft.sort_values('Value Score', ascending=False).head(10)[['Player', 'Position', 'Round', 'Type', 'Total Points']], use_container_width=True, hide_index=True)
+            
+            # --- DATAFRAME VIEW ---
+            st.subheader(f"💎 Roster Gems ({filter_type})")
+            
+            # Create a clean view
+            display_cols = ['Player', 'Position', 'Type', 'Total Points', 'Team Name']
+            if filter_type == "Regular Draft" or filter_type == "All Players":
+                display_cols.insert(2, 'Round')
+                
+            st.dataframe(
+                df_draft.sort_values('Total Points', ascending=False).head(20)[display_cols], 
+                use_container_width=True, 
+                hide_index=True
+            )
+        else:
+            st.info("No players match your filters.")
+    
     else:
-        st.warning("Draft data is loading or failed to load. Please refresh.")
+        # --- ERROR UI ---
+        st.warning("Draft data is currently empty.")
+        st.write("This often happens if the initial load timed out and the app cached the empty result.")
+        
+        if st.button("🔄 Retry Loading Draft Data"):
+            fetch_draft_results.clear()
+            st.rerun()
 
 # =========================================================
 # PAGE 7: RIVALRY
@@ -362,65 +482,66 @@ elif page == "🧠 Manager Skill":
                 
     if 'efficiency_data' in st.session_state and st.session_state.efficiency_data:
         df_eff = pd.DataFrame(st.session_state.efficiency_data)
-        df_merged = pd.merge(df_eff, df_history, on=['Week', 'Team'], how='inner')
-        df_merged['Points Left on Bench'] = df_merged['Max Points'] - df_merged['Roster Points']
-        
-        summary = df_merged.groupby('Team').agg({'Roster Points': 'sum', 'Max Points': 'sum', 'Mistake_Count': 'sum'}).reset_index()
-        summary['Eff %'] = (summary['Roster Points'] / summary['Max Points']) * 100
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("🏆 Efficiency Leaderboard")
-            st.dataframe(summary[['Team', 'Eff %']].sort_values('Eff %', ascending=False), column_config={"Eff %": st.column_config.ProgressColumn("Efficiency %", format="%.1f%%", min_value=70, max_value=100)}, use_container_width=True, hide_index=True)
-        with col2:
-            st.subheader("🤡 Total Mistakes")
-            st.dataframe(summary[['Team', 'Mistake_Count']].sort_values('Mistake_Count', ascending=False), use_container_width=True, hide_index=True)
-
-        st.divider()
-        
-        st.subheader("🔬 Match Impact Analysis")
-        selected_team = st.selectbox("Select a Manager to Audit:", summary['Team'].unique())
-        
-        if selected_team:
-            manager_weeks = df_merged[df_merged['Team'] == selected_team].sort_values('Week')
+        if not df_eff.empty:
+            df_merged = pd.merge(df_eff, df_history, on=['Week', 'Team'], how='inner')
+            df_merged['Points Left on Bench'] = df_merged['Max Points'] - df_merged['Roster Points']
             
-            st.markdown(f"**Season Log for {selected_team} (Click row to view details):**")
-            st.caption("Rows color-coded by outcome: Green = Won, Red = Lost, Yellow = Close Call")
+            summary = df_merged.groupby('Team').agg({'Roster Points': 'sum', 'Max Points': 'sum', 'Mistake_Count': 'sum'}).reset_index()
+            summary['Eff %'] = (summary['Roster Points'] / summary['Max Points']) * 100
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("🏆 Efficiency Leaderboard")
+                st.dataframe(summary[['Team', 'Eff %']].sort_values('Eff %', ascending=False), column_config={"Eff %": st.column_config.ProgressColumn("Efficiency %", format="%.1f%%", min_value=70, max_value=100)}, use_container_width=True, hide_index=True)
+            with col2:
+                st.subheader("🤡 Total Mistakes")
+                st.dataframe(summary[['Team', 'Mistake_Count']].sort_values('Mistake_Count', ascending=False), use_container_width=True, hide_index=True)
 
-            for _, row in manager_weeks.iterrows():
-                gap = row['Opponent Score'] - row['Score']
-                verdict_icon = "💀"
-                verdict_text = "Outmatched"
+            st.divider()
+            
+            st.subheader("🔬 Match Impact Analysis")
+            selected_team = st.selectbox("Select a Manager to Audit:", summary['Team'].unique())
+            
+            if selected_team:
+                manager_weeks = df_merged[df_merged['Team'] == selected_team].sort_values('Week')
                 
-                if row['Result'] == 'W':
-                    verdict_icon = "✅"
-                    verdict_text = "Won"
-                elif row['Points Left on Bench'] > gap:
-                    verdict_icon = "🚨"
-                    verdict_text = "Caused Loss"
-                
-                header = f"{verdict_icon} Week {row['Week']} vs {row['Opponent']} | Score: {row['Score']:.1f} - {row['Opponent Score']:.1f} | {verdict_text}"
-                
-                with st.expander(header):
-                    if row['Mistakes']:
-                        swap_table = []
-                        for m in row['Mistakes']:
-                            cost = m['in']['points'] - m['out']['points']
-                            impact = "No Impact"
-                            if row['Result'] == 'L':
-                                if cost > gap: impact = "🔥 FATAL ERROR (Caused Loss)"
-                                elif (row['Points Left on Bench'] > gap): impact = "⚠️ Contributor"
-                            
-                            swap_table.append({
-                                "Pos": m['pos'],
-                                "You Played": f"{m['out']['name']} ({m['out']['points']})",
-                                "Should Have": f"{m['in']['name']} ({m['in']['points']})",
-                                "Cost": cost,
-                                "Impact": impact
-                            })
-                        st.dataframe(pd.DataFrame(swap_table), column_config={"Cost": st.column_config.NumberColumn("Pts Lost", format="+%.1f")}, use_container_width=True, hide_index=True)
-                    else:
-                        st.success("Perfect lineup! No points left on bench.")
+                st.markdown(f"**Season Log for {selected_team} (Click row to view details):**")
+                st.caption("Rows color-coded by outcome: Green = Won, Red = Lost, Yellow = Close Call")
+
+                for _, row in manager_weeks.iterrows():
+                    gap = row['Opponent Score'] - row['Score']
+                    verdict_icon = "💀"
+                    verdict_text = "Outmatched"
+                    
+                    if row['Result'] == 'W':
+                        verdict_icon = "✅"
+                        verdict_text = "Won"
+                    elif row['Points Left on Bench'] > gap:
+                        verdict_icon = "🚨"
+                        verdict_text = "Caused Loss"
+                    
+                    header = f"{verdict_icon} Week {row['Week']} vs {row['Opponent']} | Score: {row['Score']:.1f} - {row['Opponent Score']:.1f} | {verdict_text}"
+                    
+                    with st.expander(header):
+                        if row['Mistakes']:
+                            swap_table = []
+                            for m in row['Mistakes']:
+                                cost = m['in']['points'] - m['out']['points']
+                                impact = "No Impact"
+                                if row['Result'] == 'L':
+                                    if cost > gap: impact = "🔥 FATAL ERROR (Caused Loss)"
+                                    elif (row['Points Left on Bench'] > gap): impact = "⚠️ Contributor"
+                                
+                                swap_table.append({
+                                    "Pos": m['pos'],
+                                    "You Played": f"{m['out']['name']} ({m['out']['points']})",
+                                    "Should Have": f"{m['in']['name']} ({m['in']['points']})",
+                                    "Cost": cost,
+                                    "Impact": impact
+                                })
+                            st.dataframe(pd.DataFrame(swap_table), column_config={"Cost": st.column_config.NumberColumn("Pts Lost", format="+%.1f")}, use_container_width=True, hide_index=True)
+                        else:
+                            st.success("Perfect lineup! No points left on bench.")
 
 # =========================================================
 # PAGE 10: DRAFT & WAIVERS
@@ -463,24 +584,26 @@ elif page == "💎 Draft & Waivers":
         
         # --- UPDATE FOR KEEPERS ---
         df_draft_gems = pd.DataFrame(st.session_state.impact_data['draft'])
-        if 'is_keeper' in df_draft_gems.columns:
-            df_draft_gems['Type'] = df_draft_gems['is_keeper'].apply(lambda x: '🛡️ Keeper' if x else 'Regular')
-        else:
-            df_draft_gems['Type'] = 'Regular'
-        
-        st.dataframe(df_draft_gems.sort_values(['WAR', 'Value Over Bench'], ascending=False).head(20), 
-                     column_config={
-                         "WAR": st.column_config.NumberColumn("WAR", help="Wins Created Above Replacement."),
-                         "Value Over Bench": st.column_config.NumberColumn("Value Over Bench", format="%.1f"),
-                         "Type": st.column_config.TextColumn("Selection Type")
-                     }, use_container_width=True, hide_index=True)
+        if not df_draft_gems.empty:
+            if 'is_keeper' in df_draft_gems.columns:
+                df_draft_gems['Type'] = df_draft_gems['is_keeper'].apply(lambda x: '🛡️ Keeper' if x else 'Regular')
+            else:
+                df_draft_gems['Type'] = 'Regular'
+            
+            st.dataframe(df_draft_gems.sort_values(['WAR', 'Value Over Bench'], ascending=False).head(20), 
+                        column_config={
+                            "WAR": st.column_config.NumberColumn("WAR", help="Wins Created Above Replacement."),
+                            "Value Over Bench": st.column_config.NumberColumn("Value Over Bench", format="%.1f"),
+                            "Type": st.column_config.TextColumn("Selection Type")
+                        }, use_container_width=True, hide_index=True)
         
         st.divider(); st.subheader("🚀 Best Waiver Moves (WAR)")
-        st.dataframe(pd.DataFrame(st.session_state.impact_data['waiver']).sort_values(['WAR', 'Value Over Bench'], ascending=False).head(20), 
-                     column_config={
-                         "WAR": st.column_config.NumberColumn("WAR", help="Wins Created Above Replacement."),
-                         "Value Over Bench": st.column_config.NumberColumn("Value Over Bench", format="%.1f")
-                     }, use_container_width=True, hide_index=True)
+        if not df_w.empty:
+            st.dataframe(df_w.sort_values(['WAR', 'Value Over Bench'], ascending=False).head(20), 
+                        column_config={
+                            "WAR": st.column_config.NumberColumn("WAR", help="Wins Created Above Replacement."),
+                            "Value Over Bench": st.column_config.NumberColumn("Value Over Bench", format="%.1f")
+                        }, use_container_width=True, hide_index=True)
         
         if st.button("Recalculate Data"): 
             st.session_state.impact_data = None

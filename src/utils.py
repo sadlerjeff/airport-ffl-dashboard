@@ -24,7 +24,7 @@ def get_yahoo_session():
         with open('yahoo_token.json', 'r') as f:
             token = json.load(f)
     if not token:
-        st.error("No token found! Please run 'python scripts/auth.py'")
+        # Avoid error spam; let main app handle 'None' return
         return None
 
     def token_updater(new_token):
@@ -35,6 +35,7 @@ def get_yahoo_session():
     extra = {'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET}
     return OAuth2Session(CLIENT_ID, token=token, auto_refresh_url='https://api.login.yahoo.com/oauth2/get_token', auto_refresh_kwargs=extra, token_updater=token_updater)
 
+@st.cache_data(ttl=3600)
 def fetch_standings():
     yahoo = get_yahoo_session()
     if not yahoo: return []
@@ -50,18 +51,19 @@ def fetch_standings():
         parsed_teams = []
         for i in range(count):
             team_wrapper = teams_data.get(str(i), {}).get('team', [])
-            name, logo = "Unknown", ""
+            name, logo, key = "Unknown", "", ""
             if len(team_wrapper) > 0:
                 for item in team_wrapper[0]:
                     if isinstance(item, dict):
                         if 'name' in item: name = item['name']
+                        if 'team_key' in item: key = item['team_key']
                         if 'team_logos' in item: logo = item['team_logos'][0].get('url', '')
             stats = team_wrapper[2].get('team_standings', {}) if len(team_wrapper) > 2 else {}
             try: rank = int(stats.get('rank', 0))
             except: rank = 0
             outcome = stats.get('outcome_totals', {})
             parsed_teams.append({
-                "Rank": rank, "Team": name, 
+                "Rank": rank, "Team": name, "Team Key": key,
                 "W": int(outcome.get('wins', 0)), "L": int(outcome.get('losses', 0)), "T": int(outcome.get('ties', 0)),
                 "PF": float(stats.get('points_for', 0)), "PA": float(stats.get('points_against', 0)), "Logo": logo
             })
