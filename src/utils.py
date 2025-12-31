@@ -35,7 +35,9 @@ def get_yahoo_session():
     extra = {'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET}
     return OAuth2Session(CLIENT_ID, token=token, auto_refresh_url='https://api.login.yahoo.com/oauth2/get_token', auto_refresh_kwargs=extra, token_updater=token_updater)
 
-@st.cache_data(ttl=3600)
+# --- CACHING UPDATE: persist="disk" saves to local file so it survives restarts ---
+
+@st.cache_data(persist="disk")
 def fetch_standings():
     yahoo = get_yahoo_session()
     if not yahoo: return []
@@ -70,7 +72,7 @@ def fetch_standings():
         return parsed_teams
     except Exception: return []
 
-@st.cache_data(ttl=3600)
+@st.cache_data(persist="disk")
 def fetch_all_weekly_scores(current_week):
     yahoo = get_yahoo_session()
     if not yahoo: return []
@@ -92,6 +94,7 @@ def fetch_all_weekly_scores(current_week):
         except: continue
     return all_matchups
 
+@st.cache_data(persist="disk")
 def get_current_week():
     yahoo = get_yahoo_session()
     if not yahoo: return 1
@@ -113,7 +116,7 @@ def find_key_recursive(data, target_key):
     return None
 
 # --- MANAGER EFFICIENCY & OPTIMIZATION ---
-@st.cache_data(ttl=3600) 
+@st.cache_data(persist="disk")
 def fetch_manager_efficiency(current_week, team_list):
     yahoo = get_yahoo_session()
     if not yahoo: return []
@@ -216,7 +219,7 @@ def fetch_manager_efficiency(current_week, team_list):
     return efficiency_data
 
 # --- DRAFT ANALYSIS ---
-@st.cache_data(ttl=3600)
+@st.cache_data(persist="disk")
 def fetch_draft_results():
     yahoo = get_yahoo_session()
     if not yahoo: return {}
@@ -252,7 +255,7 @@ def fetch_draft_results():
     except Exception: return {}
 
 # --- NEW: DRAFT SEASON STATS ---
-@st.cache_data(ttl=3600)
+@st.cache_data(persist="disk")
 def fetch_draft_season_totals(draft_data):
     yahoo = get_yahoo_session()
     if not yahoo or not draft_data: return []
@@ -307,7 +310,7 @@ def fetch_draft_season_totals(draft_data):
     return stats_data
 
 # --- IMPACT ANALYSIS ---
-@st.cache_data(ttl=3600)
+@st.cache_data(persist="disk")
 def fetch_impact_analysis(current_week):
     yahoo = get_yahoo_session()
     if not yahoo: return []
@@ -388,7 +391,7 @@ def fetch_impact_analysis(current_week):
     return list(impact_stats.values())
 
 # --- POSITIONAL PERFORMANCE (FIXED: STARTERS ONLY) ---
-@st.cache_data(ttl=3600)
+@st.cache_data(persist="disk")
 def fetch_positional_performance(current_week):
     yahoo = get_yahoo_session()
     if not yahoo: return []
@@ -435,7 +438,7 @@ def fetch_positional_performance(current_week):
     return team_pos_stats
 
 # --- PROJECTION ACCURACY ANALYSIS ---
-@st.cache_data(ttl=3600)
+@st.cache_data(persist="disk")
 def fetch_projection_accuracy(current_week):
     yahoo = get_yahoo_session()
     if not yahoo: return []

@@ -40,7 +40,8 @@ df_history = pd.DataFrame()
 analyze_week = 1
 
 try:
-    with st.spinner('Crunching the numbers...'):
+    # UPDATED LOADING TEXT HERE
+    with st.spinner("Crunching the numbers... Sorry, it's a lot of data, going to be a minute."):
         # 1. Fetch Basic Standings & History
         standings_data = fetch_standings()
         df_standings = pd.DataFrame(standings_data)
@@ -387,6 +388,38 @@ elif page == "📉 Draft Analysis":
                 use_container_width=True, 
                 hide_index=True
             )
+
+            # --- POTENTIAL KEEPERS (NEXT YEAR) ---
+            st.divider()
+            st.subheader("🔮 Potential Keepers (Next Year)")
+            st.caption("Eligible Candidates: Players drafted **Round 4 or later** this year (who were NOT Keepers this season).")
+            
+            # Use original unfiltered dataframe for this calculation to see all options
+            df_all = pd.DataFrame(st.session_state.draft_scatter)
+            # Must merge team names again for this new dataframe view
+            if not df_standings.empty and 'Team Key' in df_standings.columns:
+                df_names = df_standings[['Team', 'Team Key']].rename(columns={'Team': 'Team Name'})
+                if 'Team Key' in df_all.columns:
+                    df_all = pd.merge(df_all, df_names, on='Team Key', how='left')
+                    df_all['Team Name'] = df_all['Team Name'].fillna(df_all['Team Key'])
+
+            # Filter Logic:
+            # 1. Type == Regular (Was not a keeper this year)
+            # 2. Round > 3 (Drafted in Round 4 or later)
+            df_keepers = df_all[
+                (df_all['Type'] == 'Regular') & 
+                (df_all['Round'] > 3)
+            ].copy()
+
+            if not df_keepers.empty:
+                st.dataframe(
+                    df_keepers.sort_values('Total Points', ascending=False).head(20)[['Player', 'Position', 'Round', 'Total Points', 'Team Name']],
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("No eligible keeper candidates found based on criteria.")
+
         else:
             st.info("No players match your filters.")
     
