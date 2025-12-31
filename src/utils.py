@@ -224,12 +224,85 @@ def fetch_draft_results():
         if r.status_code != 200: return {}
         data = r.json()
         draft_results = data['fantasy_content']['league'][1]['draft_results']
+        
         draft_map = {}
+        max_round = 0
+        
+        # 1. First Pass: populate map and find the total number of rounds
         for i in range(draft_results['count']):
             res = draft_results[str(i)]['draft_result']
-            draft_map[res['player_key']] = {'round': res['round'], 'pick': res['pick'], 'team_key': res['team_key']}
+            r_num = int(res['round'])
+            if r_num > max_round: max_round = r_num
+            draft_map[res['player_key']] = {'round': r_num, 'pick': int(res['pick']), 'team_key': res['team_key']}
+        
+        # 2. Second Pass: Mark Keepers (Last 4 Rounds)
+        # Example: If 16 rounds, Keepers are rounds 13, 14, 15, 16.
+        keeper_cutoff = max(1, max_round - 3)
+        
+        for pk in draft_map:
+            is_keeper = draft_map[pk]['round'] >= keeper_cutoff
+            draft_map[pk]['is_keeper'] = is_keeper
+            # Force all Keepers to "Round 0" for analysis purposes
+            if is_keeper:
+                draft_map[pk]['round'] = 0
+
         return draft_map
     except Exception: return {}
+
+# --- NEW: DRAFT SEASON STATS ---
+@st.cache_data(ttl=3600)
+def fetch_draft_season_totals(draft_data):
+    yahoo = get_yahoo_session()
+    if not yahoo or not draft_data: return []
+    
+    player_keys = list(draft_data.keys())
+    stats_data = []
+    chunk_size = 25
+    
+    my_bar = st.progress(0, text="Analyzing Draft Class...")
+    
+    for i in range(0, len(player_keys), chunk_size):
+        chunk = player_keys[i:i + chunk_size]
+        keys_str = ",".join(chunk)
+        # Fetch Season Totals
+        url = f'https://fantasysports.yahooapis.com/fantasy/v2/league/{LEAGUE_ID}/players;player_keys={keys_str}/stats?format=json'
+        
+        try:
+            r = yahoo.get(url)
+            if r.status_code != 200: continue
+            
+            league_resp = r.json()['fantasy_content']['league']
+            if isinstance(league_resp, list): league_resp = league_resp[1] # Sometimes wrapped
+            players_obj = league_resp['players']
+            
+            for j in range(players_obj['count']):
+                p_wrapper = players_obj[str(j)]['player']
+                meta = p_wrapper[0]
+                p_key = find_key_recursive(meta, 'player_key')
+                name = find_key_recursive(meta, 'full')
+                display_pos = find_key_recursive(meta, 'display_position')
+                
+                points_data = find_key_recursive(p_wrapper, 'player_points')
+                total_pts = float(points_data['total']) if points_data else 0.0
+                
+                d_info = draft_data.get(p_key, {})
+                is_keeper = d_info.get('is_keeper', False)
+                
+                stats_data.append({
+                    'Player': name,
+                    'Position': display_pos,
+                    'Team Key': d_info.get('team_key'),
+                    'Round': int(d_info.get('round', 0)),
+                    'Pick': int(d_info.get('pick', 0)),
+                    'Total Points': total_pts,
+                    'Type': 'Keeper' if is_keeper else 'Regular'
+                })
+        except Exception: continue
+        my_bar.progress(min((i + chunk_size) / len(player_keys), 1.0))
+        time.sleep(0.05)
+        
+    my_bar.empty()
+    return stats_data
 
 # --- IMPACT ANALYSIS ---
 @st.cache_data(ttl=3600)
@@ -246,46 +319,118 @@ def fetch_impact_analysis(current_week):
             team_keys = {teams_data[str(i)]['team'][0][0]['team_key']: teams_data[str(i)]['team'][0][2]['name'] for i in range(teams_data['count'])}
     except: return []
     impact_stats = {} 
-    my_bar = st.progress(0, text="Calculating WAR (Wins Above Bench)...")
+    my_bar = st.progress(0, text="Calculating Normalized Value (VOB)...")
     total_steps = current_week * len(team_keys)
     step_count = 0
+    
+    for week in range(1, current_week + 1):
+        league_bench_totals = {}  
+        league_rosters = {} 
+        for t_key in team_keys:
+            step_count += 1
+            my_bar.progress(min(step_count / total_steps, 0.99), text=f"Analyzing Week {week}...")
+            url = f'https://fantasysports.yahooapis.com/fantasy/v2/team/{t_key}/roster;week={week}/players/stats?format=json'
+            try:
+                rr = yahoo.get(url)
+                if rr.status_code == 200:
+                    roster = rr.json()['fantasy_content']['team'][1]['roster']['0']['players']
+                    league_rosters[t_key] = roster
+                    for idx in range(roster['count']):
+                        p_data = roster[str(idx)]['player']
+                        points_obj = find_key_recursive(p_data, 'player_points')
+                        points = float(points_obj['total']) if points_obj else 0.0
+                        slot = find_key_recursive(p_data, 'selected_position')[1]['position']
+                        display_pos = find_key_recursive(p_data, 'display_position')
+                        if slot == 'BN':
+                            if display_pos not in league_bench_totals: league_bench_totals[display_pos] = [0.0, 0]
+                            league_bench_totals[display_pos][0] += points
+                            league_bench_totals[display_pos][1] += 1
+            except: continue
+            time.sleep(0.02)
+
+        avg_bench_score = {pos: (data[0] / data[1]) for pos, data in league_bench_totals.items() if data[1] > 0}
+
+        for t_key, roster_data in league_rosters.items():
+            t_name = team_keys[t_key]
+            game_ctx = matchup_map.get(t_name, {}).get(week, None)
+            starters = {}
+            my_bench_scores = {}
+            for idx in range(roster_data['count']):
+                p_data = roster_data[str(idx)]['player']
+                p_key = p_data[0][0]['player_key']
+                points = float(find_key_recursive(p_data, 'player_points')['total'])
+                slot = find_key_recursive(p_data, 'selected_position')[1]['position']
+                display_pos = find_key_recursive(p_data, 'display_position')
+                if slot in ['IR', 'IR+', 'Out', 'RES']: continue
+                if slot != 'BN':
+                    starters[p_key] = {'key': p_key, 'name': p_data[0][2]['name']['full'], 'points': points, 'pos': display_pos}
+                else:
+                    if display_pos not in my_bench_scores: my_bench_scores[display_pos] = []
+                    my_bench_scores[display_pos].append(points)
+            
+            for pk, p in starters.items():
+                if pk not in impact_stats: 
+                    impact_stats[pk] = {'Player': p['name'], 'Team': t_name, 'Player Key': pk, 'Starter Points': 0.0, 'WAR': 0, 'Value Over Bench': 0.0}
+                
+                impact_stats[pk]['Starter Points'] += p['points']
+                my_best_bench = max(my_bench_scores.get(p['pos'], [0.0]))
+                league_avg = avg_bench_score.get(p['pos'], 0.0)
+                baseline = max(my_best_bench, league_avg)
+                val_added = p['points'] - baseline
+                impact_stats[pk]['Value Over Bench'] += val_added
+
+                if game_ctx and game_ctx['Result'] == 'W':
+                    if val_added > game_ctx['Margin']: impact_stats[pk]['WAR'] += 1
+
+    my_bar.empty()
+    return list(impact_stats.values())
+
+# --- POSITIONAL PERFORMANCE (FIXED: STARTERS ONLY) ---
+@st.cache_data(ttl=3600)
+def fetch_positional_performance(current_week):
+    yahoo = get_yahoo_session()
+    if not yahoo: return []
+    
+    url_keys = f'https://fantasysports.yahooapis.com/fantasy/v2/league/{LEAGUE_ID}/teams?format=json'
+    try:
+        r = yahoo.get(url_keys)
+        teams_data = r.json()['fantasy_content']['league'][1]['teams']
+        team_keys = {teams_data[str(i)]['team'][0][0]['team_key']: teams_data[str(i)]['team'][0][2]['name'] for i in range(teams_data['count'])}
+    except: return []
+
+    team_pos_stats = {t: {'QB': [], 'RB': [], 'WR': [], 'TE': [], 'K': [], 'DEF': []} for t in team_keys.values()}
+    
+    my_bar = st.progress(0, text="Analyzing Positional Strength...")
+    total_steps = current_week * len(team_keys)
+    step_count = 0
+
     for week in range(1, current_week + 1):
         for t_key, t_name in team_keys.items():
             step_count += 1
-            my_bar.progress(min(step_count / total_steps, 0.99), text=f"Analyzing {t_name} Week {week}...")
-            time.sleep(0.05) 
+            my_bar.progress(min(step_count / total_steps, 0.99))
+            
             url = f'https://fantasysports.yahooapis.com/fantasy/v2/team/{t_key}/roster;week={week}/players/stats?format=json'
             try:
                 rr = yahoo.get(url)
                 if rr.status_code != 200: continue
                 roster = rr.json()['fantasy_content']['team'][1]['roster']['0']['players']
-                starters, bench_by_pos = {}, {} 
+                
                 for idx in range(roster['count']):
                     p_data = roster[str(idx)]['player']
-                    p_key = p_data[0][0]['player_key']
-                    points_obj = find_key_recursive(p_data, 'player_points')
-                    points = float(points_obj['total']) if points_obj else 0.0
-                    slot = find_key_recursive(p_data, 'selected_position')[1]['position']
-                    if slot in ['IR', 'IR+', 'Out', 'RES']: continue
+                    points = float(find_key_recursive(p_data, 'player_points')['total'])
                     display_pos = find_key_recursive(p_data, 'display_position')
-                    p_info = {'key': p_key, 'name': p_data[0][2]['name']['full'], 'points': points, 'pos': display_pos}
-                    if slot != 'BN': starters[p_key] = p_info
-                    else:
-                        if display_pos not in bench_by_pos: bench_by_pos[display_pos] = []
-                        bench_by_pos[display_pos].append(points)
-                for pos in bench_by_pos: bench_by_pos[pos].sort(reverse=True)
-                game_ctx = matchup_map.get(t_name, {}).get(week, None)
-                for pk, p in starters.items():
-                    if pk not in impact_stats: impact_stats[pk] = {'Player': p['name'], 'Team': t_name, 'Player Key': pk, 'Starter Points': 0.0, 'WAR': 0}
-                    impact_stats[pk]['Starter Points'] += p['points']
-                    if game_ctx and game_ctx['Result'] == 'W':
-                        rep_points = 0.0
-                        if p['pos'] in bench_by_pos and bench_by_pos[p['pos']]: rep_points = bench_by_pos[p['pos']][0]
-                        value_over_bench = p['points'] - rep_points
-                        if value_over_bench > game_ctx['Margin']: impact_stats[pk]['WAR'] += 1
+                    
+                    # FILTER: MUST be a Starter (BN excluded) AND must have played (>0 points)
+                    selected_pos = find_key_recursive(p_data, 'selected_position')
+                    slot = selected_pos[1]['position']
+                    
+                    if points > 0 and slot != 'BN' and slot not in ['IR', 'IR+', 'Out', 'RES']:
+                        if display_pos in team_pos_stats[t_name]:
+                            team_pos_stats[t_name][display_pos].append(points)
             except: continue
+            
     my_bar.empty()
-    return list(impact_stats.values())
+    return team_pos_stats
 
 # --- PROJECTION ACCURACY ANALYSIS ---
 @st.cache_data(ttl=3600)
