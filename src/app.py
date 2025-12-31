@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-from utils import fetch_standings, fetch_all_weekly_scores, get_current_week, fetch_manager_efficiency, fetch_draft_results, fetch_impact_analysis
+from utils import fetch_standings, fetch_all_weekly_scores, get_current_week, fetch_manager_efficiency, fetch_draft_results, fetch_impact_analysis, fetch_projection_accuracy
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Airport FFL Analytics", page_icon="🏈", layout="wide")
@@ -10,7 +10,7 @@ st.set_page_config(page_title="Airport FFL Analytics", page_icon="🏈", layout=
 st.sidebar.title("🏈 Menu")
 page = st.sidebar.radio(
     "Go to:",
-    ["🏆 Standings", "🍀 Luck Index", "📊 Power Rankings", "⚔️ Rivalry", "📉 Trends", "🧠 Manager Skill", "💎 Draft & Waivers", "📈 Raw Data"]
+    ["🏆 Standings", "🍀 Luck Index", "📊 Power Rankings", "⚔️ Rivalry", "📉 Trends", "🧠 Manager Skill", "🎯 Projections", "💎 Draft & Waivers", "📈 Raw Data"]
 )
 
 st.title("🏈 Airport FFL Analytics Center")
@@ -19,10 +19,8 @@ st.title("🏈 Airport FFL Analytics Center")
 with st.spinner('Syncing with Yahoo Fantasy...'):
     standings_data = fetch_standings()
     df_standings = pd.DataFrame(standings_data)
-    
     current_week = get_current_week()
     analyze_week = max(1, current_week - 1) 
-    
     history_data = fetch_all_weekly_scores(analyze_week)
     df_history = pd.DataFrame(history_data)
 
@@ -31,275 +29,237 @@ with st.spinner('Syncing with Yahoo Fantasy...'):
 # =========================================================
 if page == "🏆 Standings":
     st.header("🏆 Official League Standings")
-    st.markdown("Current official standings from Yahoo. Rank is determined by Win/Loss record, with Total Points For (PF) acting as the tiebreaker.")
+    st.info("**Current official standings from Yahoo.** Rank is determined by Win/Loss record, with Total Points For (PF) acting as the tiebreaker.")
     if not df_standings.empty:
         df_standings['Rank'] = pd.to_numeric(df_standings['Rank'], errors='coerce').fillna(100).astype(int)
-        df_display = df_standings.sort_values('Rank')
-        st.dataframe(
-            df_display[['Rank', 'Team', 'W', 'L', 'T', 'PF', 'PA']],
-            column_config={
-                "Rank": st.column_config.NumberColumn("Rank", format="#%d", width="small", help="Official Yahoo league ranking."),
-                "Team": st.column_config.TextColumn("Team", help="Team Name"),
-                "W": st.column_config.NumberColumn("Wins", help="Total games won."),
-                "L": st.column_config.NumberColumn("Losses", help="Total games lost."),
-                "T": st.column_config.NumberColumn("Ties", help="Total games tied."),
-                "PF": st.column_config.NumberColumn("Points For", format="%.2f", help="Total points scored by your starters."),
-                "PA": st.column_config.NumberColumn("Points Against", format="%.2f", help="Total points scored against you."),
-            }, use_container_width=True, hide_index=True
-        )
-    else:
-        st.warning("⚠️ Could not load standings. Please refresh your Yahoo Token.")
+        st.dataframe(df_standings.sort_values('Rank')[['Rank', 'Team', 'W', 'L', 'T', 'PF', 'PA']], use_container_width=True, hide_index=True)
 
 # =========================================================
 # PAGE 2: LUCK INDEX
 # =========================================================
 elif page == "🍀 Luck Index":
     st.header(f"The Luck Index (Weeks 1-{analyze_week})")
-    st.info("Calculates your 'Theoretical Record' (All-Play) against every team, every week.")
+    st.info("**Are you good, or just lucky?** This calculates your **'All-Play' record**—simulating what your record would be if you played every single team, every single week.")
     if not df_history.empty:
         luck_stats = []
-        teams = df_history['Team'].unique()
-        for team in teams:
-            total_wins = 0
-            total_losses = 0
-            for week in range(1, analyze_week + 1):
-                week_scores = df_history[df_history['Week'] == week]
-                if week_scores.empty: continue
-                my_row = week_scores[week_scores['Team'] == team]
-                if my_row.empty: continue
-                my_score = my_row['Score'].values[0]
-                wins = (week_scores['Score'] < my_score).sum()
-                losses = (week_scores['Score'] > my_score).sum()
-                total_wins += wins
-                total_losses += losses
-            total_games = total_wins + total_losses
-            win_pct = total_wins / total_games if total_games > 0 else 0.0
-            luck_stats.append({'Team': team, 'All-Play Wins': total_wins, 'All-Play Losses': total_losses, 'All-Play Pct': win_pct})
+        for team in df_history['Team'].unique():
+            w, l = 0, 0
+            for wk in range(1, analyze_week + 1):
+                wk_scores = df_history[df_history['Week'] == wk]
+                match = wk_scores[wk_scores['Team'] == team]
+                if match.empty: continue
+                my_score = match['Score'].values[0]
+                w += (wk_scores['Score'] < my_score).sum()
+                l += (wk_scores['Score'] > my_score).sum()
+            luck_stats.append({'Team': team, 'All-Play Wins': w, 'All-Play Losses': l, 'All-Play Pct': w/(w+l) if (w+l)>0 else 0})
         df_luck = pd.DataFrame(luck_stats)
         if not df_luck.empty and not df_standings.empty:
             df_final = pd.merge(df_standings, df_luck, on='Team')
-            df_final['Real Pct'] = df_final['W'] / (df_final['W'] + df_final['L'])
-            df_final['Luck Factor'] = df_final['Real Pct'] - df_final['All-Play Pct']
-            df_display = df_final[['Team', 'W', 'L', 'All-Play Wins', 'All-Play Losses', 'Luck Factor']].sort_values('All-Play Wins', ascending=False)
-            
-            def color_luck(val):
-                color = '#d4edda' if val > 0 else '#f8d7da' if val < 0 else ''
-                text_color = 'green' if val > 0 else 'red' if val < 0 else 'black'
-                return f'background-color: {color}; color: {text_color}'
-            
-            st.dataframe(
-                df_display.style.map(color_luck, subset=['Luck Factor']).format({"Luck Factor": "{:.2f}"}),
-                column_config={
-                    "Team": st.column_config.TextColumn("Team"),
-                    "W": st.column_config.NumberColumn("Real Wins", help="Your actual record."),
-                    "L": st.column_config.NumberColumn("Real Losses", help="Your actual record."),
-                    "All-Play Wins": st.column_config.NumberColumn("Theoretical Wins", help="Wins you WOULD have if you played every team, every week."),
-                    "All-Play Losses": st.column_config.NumberColumn("Theoretical Losses", help="Losses you WOULD have if you played every team, every week."),
-                    "Luck Factor": st.column_config.NumberColumn("Luck Factor", help="Positive = Lucky, Negative = Unlucky")
-                }, use_container_width=True, hide_index=True
-            )
-        else:
-            st.warning("Missing data.")
+            df_final['Luck Factor'] = (df_final['W']/(df_final['W']+df_final['L'])) - df_final['All-Play Pct']
+            def color_luck(val): color = '#d4edda' if val > 0 else '#f8d7da'; return f'background-color: {color}; color: {"green" if val > 0 else "red"}'
+            st.dataframe(df_final.sort_values('All-Play Wins', ascending=False).style.map(color_luck, subset=['Luck Factor']).format({"Luck Factor": "{:.2f}"}), use_container_width=True, hide_index=True)
 
 # =========================================================
 # PAGE 3: POWER RANKINGS
 # =========================================================
 elif page == "📊 Power Rankings":
     st.header("📊 Power Rankings")
-    st.markdown("Rewards high scoring but penalizes inconsistency.")
+    st.info("**Strength of Roster.** This formula rewards high scoring but penalizes inconsistency (Volatility). High volatility means your team is unpredictable.")
     if not df_history.empty:
-        power_stats = df_history.groupby('Team')['Score'].agg(['mean', 'std', 'min', 'max']).reset_index()
-        power_stats.columns = ['Team', 'Avg Score', 'Volatility', 'Min Score', 'Max Score']
-        power_stats['Power Score'] = power_stats['Avg Score'] - (power_stats['Volatility'] * 0.5)
-        power_stats = power_stats.sort_values('Power Score', ascending=False)
-        power_stats['Rank'] = range(1, len(power_stats) + 1)
-        st.dataframe(
-            power_stats[['Rank', 'Team', 'Power Score', 'Avg Score', 'Volatility', 'Min Score', 'Max Score']],
-            column_config={
-                "Rank": st.column_config.NumberColumn("Rank", format="#%d", width="small"),
-                "Power Score": st.column_config.NumberColumn("Power Score", format="%.1f", help="Avg Score minus Volatility penalty."),
-                "Avg Score": st.column_config.NumberColumn("Avg Score", format="%.1f", help="Average points per week."),
-                "Volatility": st.column_config.NumberColumn("Volatility", format="%.1f", help="Standard Deviation. High = Unpredictable."),
-                "Min Score": st.column_config.NumberColumn("Season Low", format="%.1f", help="Lowest score of the season."),
-                "Max Score": st.column_config.NumberColumn("Season High", format="%.1f", help="Highest score of the season.")
-            },
-            use_container_width=True, hide_index=True
-        )
+        power_stats = df_history.groupby('Team')['Score'].agg(['mean', 'std']).reset_index()
+        power_stats['Power Score'] = power_stats['mean'] - (power_stats['std'] * 0.5)
+        st.dataframe(power_stats.sort_values('Power Score', ascending=False), use_container_width=True, hide_index=True)
 
 # =========================================================
 # PAGE 4: RIVALRY
 # =========================================================
 elif page == "⚔️ Rivalry":
     st.header("⚔️ League Records")
+    st.info("Season records and the head-to-head matrix. Check who you've dominated and who has your number.")
     if not df_history.empty:
-        high = df_history.loc[df_history['Score'].idxmax()]
-        low = df_history.loc[df_history['Score'].idxmin()]
-        losses = df_history[df_history['Result'] == 'L']
-        col1, col2, col3 = st.columns(3)
-        col1.metric("🚀 Season High", f"{high['Score']} pts", high['Team'], help="Highest single game score.")
-        col2.metric("📉 Season Low", f"{low['Score']} pts", low['Team'], help="Lowest single game score.")
-        if not losses.empty:
-            heartbreak = losses.loc[losses['Score'].idxmax()]
-            col3.metric("💔 Heartbreak Award", f"{heartbreak['Score']} pts", f"{heartbreak['Team']} (Lost)", help="Highest score that still resulted in a loss.")
-        st.divider()
-        st.subheader("Head-to-Head Matrix")
-        st.caption("Rows are YOU, Columns are OPPONENTS. Green = Win, Red = Loss.")
-        teams = sorted(df_history['Team'].unique())
-        matrix = pd.DataFrame(index=teams, columns=teams).fillna("-")
-        for team in teams:
-            team_games = df_history[df_history['Team'] == team]
-            for _, row in team_games.iterrows():
-                opp = row['Opponent']
-                res = row['Result']
-                curr = matrix.at[team, opp]
-                matrix.at[team, opp] = res if curr == "-" else curr + f", {res}"
-        def color_results(val):
-            if not isinstance(val, str): return ''
-            if 'W' in val and 'L' in val: return 'background-color: #fff3cd; color: black'
-            if 'W' in val: return 'background-color: #d4edda; color: green'
-            if 'L' in val: return 'background-color: #f8d7da; color: red'
-            return ''
-        st.dataframe(matrix.style.map(color_results), use_container_width=True)
+        h, l = df_history.loc[df_history['Score'].idxmax()], df_history.loc[df_history['Score'].idxmin()]
+        c1, c2, c3 = st.columns(3); c1.metric("🚀 Season High", f"{h['Score']} pts", h['Team']); c2.metric("📉 Season Low", f"{l['Score']} pts", l['Team'])
+        losses = df_history[df_history['Result'] == 'L']; hb = losses.loc[losses['Score'].idxmax()] if not losses.empty else None
+        if hb is not None: c3.metric("💔 Heartbreak", f"{hb['Score']} pts", hb['Team'])
+        st.divider(); st.subheader("Head-to-Head Matrix")
+        matrix = pd.DataFrame(index=sorted(df_history['Team'].unique()), columns=sorted(df_history['Team'].unique())).fillna("-")
+        for team in matrix.index:
+            for _, row in df_history[df_history['Team'] == team].iterrows(): matrix.at[team, row['Opponent']] = row['Result'] if matrix.at[team, row['Opponent']] == "-" else matrix.at[team, row['Opponent']] + f", {row['Result']}"
+        st.dataframe(matrix, use_container_width=True)
 
 # =========================================================
 # PAGE 5: TRENDS
 # =========================================================
 elif page == "📉 Trends":
     st.header("📉 Season Trends")
+    st.info("Tracking the cumulative race for points. See which teams are gaining ground and which are falling behind.")
     if not df_history.empty:
         df_cum = df_history.sort_values(['Team', 'Week'])
         df_cum['Total Points'] = df_cum.groupby('Team')['Score'].cumsum()
-        c = alt.Chart(df_cum).mark_line(point=True).encode(
-            x=alt.X('Week:O', title="Week"), y=alt.Y('Total Points:Q', scale=alt.Scale(zero=False), title="Cumulative Points"), color='Team:N', tooltip=['Team', 'Week', 'Total Points']
-        ).interactive()
-        st.altair_chart(c, use_container_width=True)
+        st.altair_chart(alt.Chart(df_cum).mark_line(point=True).encode(x='Week:O', y='Total Points:Q', color='Team:N').interactive(), use_container_width=True)
 
 # =========================================================
-# PAGE 6: MANAGER SKILL
+# PAGE 6: MANAGER SKILL (DETAILED EXPLORER)
 # =========================================================
 elif page == "🧠 Manager Skill":
     st.header("🧠 Manager Efficiency")
-    st.info("Compares Actual Score vs. Max Potential Score.")
-    if 'efficiency_data' not in st.session_state:
-        st.session_state.efficiency_data = None
+    st.info("""
+    **Who sets the best lineup?** This tab analyzes how well each manager maximizes their roster's potential.
+    * **Efficiency:** Percentage of 'Perfect Lineup' points you actually scored.
+    * **Mistakes:** Count of times a bench player outscored a starter at the same position.
+    * **Impact Analysis:** Click on a match below to see if your mistakes actually cost you the win.
+    """)
+    
+    if 'efficiency_data' not in st.session_state: st.session_state.efficiency_data = None
     if st.session_state.efficiency_data is None:
-        if st.button("Calculate Efficiency (Click to Run)"):
-            with st.spinner("Analyzing bench points..."):
-                if not df_history.empty:
-                    teams_list = df_history['Team'].unique()
-                    st.session_state.efficiency_data = fetch_manager_efficiency(analyze_week, teams_list)
-                    st.rerun()
-    if st.session_state.efficiency_data:
-        df_max = pd.DataFrame(st.session_state.efficiency_data)
-        if not df_max.empty and not df_history.empty:
-            df_merged = pd.merge(df_history, df_max, on=['Week', 'Team'], how='inner')
-            df_merged['Efficiency %'] = (df_merged['Score'] / df_merged['Max Points']) * 100
-            df_merged['Points Left on Bench'] = df_merged['Max Points'] - df_merged['Score']
-            season_stats = df_merged.groupby('Team').agg({'Score': 'sum', 'Max Points': 'sum', 'Points Left on Bench': 'sum'}).reset_index()
-            season_stats['Overall Efficiency'] = (season_stats['Score'] / season_stats['Max Points']) * 100
-            season_stats = season_stats.sort_values('Overall Efficiency', ascending=False)
-            st.dataframe(
-                season_stats[['Team', 'Overall Efficiency', 'Points Left on Bench']], 
-                column_config={
-                    "Overall Efficiency": st.column_config.ProgressColumn("Efficiency %", format="%.1f%%", min_value=70, max_value=100, help="100% = You started the perfect lineup every week."),
-                    "Points Left on Bench": st.column_config.NumberColumn("Points Left on Bench", format="%.0f", help="Points lost by leaving better players on the bench.")
-                }, 
-                use_container_width=True, hide_index=True
-            )
-            if st.button("Recalculate (Reset)"):
-                st.session_state.efficiency_data = None
+        if st.button("Calculate Efficiency"):
+            with st.spinner("Analyzing lineup decisions..."):
+                st.session_state.efficiency_data = fetch_manager_efficiency(analyze_week, df_history['Team'].unique())
                 st.rerun()
+                
+    if st.session_state.efficiency_data:
+        df_eff = pd.DataFrame(st.session_state.efficiency_data)
+        df_merged = pd.merge(df_eff, df_history, on=['Week', 'Team'], how='inner')
+        df_merged['Points Left on Bench'] = df_merged['Max Points'] - df_merged['Roster Points']
+        
+        summary = df_merged.groupby('Team').agg({'Roster Points': 'sum', 'Max Points': 'sum', 'Mistake_Count': 'sum'}).reset_index()
+        summary['Eff %'] = (summary['Roster Points'] / summary['Max Points']) * 100
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("🏆 Overall Efficiency")
+            st.dataframe(summary[['Team', 'Eff %']].sort_values('Eff %', ascending=False), column_config={"Eff %": st.column_config.ProgressColumn("Efficiency %", format="%.1f%%", min_value=70, max_value=100)}, use_container_width=True, hide_index=True)
+        with col2:
+            st.subheader("🤡 Total Mistakes")
+            st.dataframe(summary[['Team', 'Mistake_Count']].sort_values('Mistake_Count', ascending=False), use_container_width=True, hide_index=True)
+
+        st.divider()
+        
+        # 1. Select Manager
+        st.subheader("🔬 Match Impact Analysis")
+        selected_team = st.selectbox("Select a Manager to Audit:", summary['Team'].unique())
+        
+        if selected_team:
+            manager_weeks = df_merged[df_merged['Team'] == selected_team].sort_values('Week')
+            
+            def get_verdict(row):
+                if row['Result'] == 'W': return "✅ Won"
+                gap = row['Opponent Score'] - row['Score']
+                if row['Points Left on Bench'] > gap: return "🚨 Caused Loss"
+                return "💀 Outmatched"
+
+            manager_weeks['Verdict'] = manager_weeks.apply(get_verdict, axis=1)
+            
+            st.markdown(f"**Season Log for {selected_team} (Click a row to see details):**")
+            
+            # CLICKABLE DATAFRAME
+            event = st.dataframe(
+                manager_weeks[['Week', 'Opponent', 'Result', 'Score', 'Opponent Score', 'Max Points', 'Verdict']],
+                column_config={
+                    "Score": st.column_config.NumberColumn("Actual Score", format="%.1f"),
+                    "Max Points": st.column_config.NumberColumn("Potential Score", format="%.1f"),
+                    "Verdict": st.column_config.TextColumn("Manager Performance")
+                },
+                use_container_width=True, 
+                hide_index=True,
+                selection_mode="single-row",
+                on_select="rerun"
+            )
+            
+            # 2. Show Details Based on Selection
+            if len(event.selection.rows) > 0:
+                selected_index = event.selection.rows[0]
+                selected_row = manager_weeks.iloc[selected_index]
+                sel_week = selected_row['Week']
+                gap = selected_row['Opponent Score'] - selected_row['Score']
+                res = selected_row['Result']
+                
+                st.divider()
+                st.markdown(f"### 🔎 Breakdown for Week {sel_week} vs {selected_row['Opponent']}")
+                
+                mistakes = selected_row['Mistakes']
+                if mistakes:
+                    swap_table = []
+                    for m in mistakes:
+                        cost = m['in']['points'] - m['out']['points']
+                        if res == 'L':
+                            if cost > gap: impact = "🔥 FATAL ERROR (Solely caused loss)"
+                            elif (selected_row['Points Left on Bench'] > gap): impact = "⚠️ Contributor (Cumulative failure)"
+                            else: impact = "No Impact (Would have lost anyway)"
+                        else: impact = "None (Won Match)"
+                            
+                        swap_table.append({
+                            "Pos": m['pos'],
+                            "Played": f"{m['out']['name']} ({m['out']['points']})",
+                            "Should Have": f"{m['in']['name']} ({m['in']['points']})",
+                            "Cost": cost,
+                            "Impact": impact
+                        })
+                    
+                    st.dataframe(pd.DataFrame(swap_table), column_config={"Cost": st.column_config.NumberColumn("Pts Lost", format="+%.1f")}, use_container_width=True, hide_index=True)
+                else:
+                    st.success("No lineup mistakes made this week.")
+            else:
+                st.caption("👆 Select a week above to see the specific players involved.")
+
+        if st.button("Reset Analysis"):
+            st.session_state.efficiency_data = None
+            st.rerun()
 
 # =========================================================
-# PAGE 7: DRAFT & WAIVERS (WAR ANALYSIS)
+# PAGE 7: PROJECTIONS
+# =========================================================
+elif page == "🎯 Projections":
+    st.header("🎯 Projection Accuracy")
+    st.info("**Did your team live up to the hype?** This compares Yahoo's pre-game projections against actual scores for every starter.")
+    if 'proj_data' not in st.session_state: st.session_state.proj_data = None
+    if st.session_state.proj_data is None:
+        if st.button("Calculate Projection Accuracy"):
+            with st.spinner("Analyzing Yahoo projections..."):
+                st.session_state.proj_data = fetch_projection_accuracy(analyze_week)
+                st.rerun()
+    if st.session_state.proj_data:
+        df_p = pd.DataFrame(st.session_state.proj_data)
+        if not df_p.empty:
+            starters = df_p[df_p['IsStarter']]
+            if starters['Projected'].sum() == 0:
+                st.warning("⚠️ Yahoo API is returning 0 for projections.")
+            team_s = starters.groupby('Team').agg({'Actual': 'sum', 'Projected': 'sum', 'Diff': 'sum'}).reset_index()
+            st.subheader("🏆 Team Reliability")
+            st.dataframe(team_s.sort_values('Diff', ascending=False), column_config={"Diff": st.column_config.NumberColumn("Total Boom/Bust", format="%.1f pts", help="Points scored above or below projections.")}, use_container_width=True, hide_index=True)
+            st.subheader("📈 Projection Scatter")
+            st.altair_chart(alt.Chart(starters).mark_circle(size=60).encode(x=alt.X('Projected:Q'), y=alt.Y('Actual:Q'), color='Team:N', tooltip=['Player', 'Week', 'Actual', 'Projected']).interactive(), use_container_width=True)
+        if st.button("Reset Analysis"): st.session_state.proj_data = None; st.rerun()
+
+# =========================================================
+# PAGE 8: DRAFT & WAIVERS
 # =========================================================
 elif page == "💎 Draft & Waivers":
     st.header("💎 Gem Mining (WAR Analysis)")
     st.info("""
     **Wins Above Replacement (WAR):**
-    This checks if your starter actually mattered. 
-    If you started a player who scored 20 pts, but you had a bench player who scored 18 pts, the starter only added **+2 Points of Value**.
-    
-    * **WAR (Wins):** The number of games you WON that you would have LOST if you had played your best bench option instead.
+    This measures if a player actually changed the outcome of your games.
+    1. We find the **Value Over Bench** (Starter Pts - Best Bench scorer at that position).
+    2. If your **Value Over Bench** was larger than your margin of victory, that player is credited with a **Critical Win**.
     """)
-    
-    if 'impact_data' not in st.session_state:
-        st.session_state.impact_data = None
-
+    if 'impact_data' not in st.session_state: st.session_state.impact_data = None
     if st.session_state.impact_data is None:
-        if st.button("Calculate Value (Click to Run)"):
-            with st.spinner("Running 'What-If' scenarios for every game..."):
-                draft_data = fetch_draft_results()
-                impact_stats = fetch_impact_analysis(analyze_week)
-                
-                if impact_stats:
-                    draft_gems = []
-                    waiver_gems = []
-                    
-                    for p in impact_stats:
-                        p_key = p['Player Key']
-                        # Classify Source
-                        if draft_data and p_key in draft_data:
-                            info = draft_data[p_key]
-                            p['Round'] = info['round']
-                            p['Pick'] = info['pick']
-                            draft_gems.append(p)
-                        else:
-                            waiver_gems.append(p)
-                    
-                    st.session_state.impact_data = {'draft': draft_gems, 'waiver': waiver_gems}
-                    st.rerun()
-
+        if st.button("Calculate WAR Value"):
+            with st.spinner("Analyzing wins created..."):
+                draft = fetch_draft_results(); impact = fetch_impact_analysis(analyze_week)
+                d_gems, w_gems = [], []
+                for p in impact:
+                    if p['Player Key'] in draft: 
+                        p.update(draft[p['Player Key']]); d_gems.append(p)
+                    else: w_gems.append(p)
+                st.session_state.impact_data = {'draft': d_gems, 'waiver': w_gems}; st.rerun()
     if st.session_state.impact_data:
-        draft_gems = st.session_state.impact_data['draft']
-        waiver_gems = st.session_state.impact_data['waiver']
-        
-        # 1. Draft Gems
-        st.subheader("🎯 Most Valuable Draft Picks (WAR)")
-        if draft_gems:
-            df_draft = pd.DataFrame(draft_gems)
-            df_draft = df_draft.sort_values(['WAR', 'Starter Points'], ascending=[False, False]).head(20)
-            
-            st.dataframe(
-                df_draft[['Team', 'Player', 'Starter Points', 'WAR', 'Round', 'Pick']],
-                column_config={
-                    "Starter Points": st.column_config.NumberColumn("Starter Pts", format="%.1f", help="Points scored while in the starting lineup."),
-                    "WAR": st.column_config.NumberColumn("WAR (Wins)", format="%d 🏆", help="Critical Wins created by this player over a bench replacement."),
-                    "Round": st.column_config.NumberColumn("Round", help="Draft Round."),
-                    "Pick": st.column_config.NumberColumn("Pick", help="Overall Pick.")
-                }, use_container_width=True, hide_index=True
-            )
-        
-        st.divider()
-        
-        # 2. Waiver Gems
-        st.subheader("🚀 Most Valuable Waiver Moves (WAR)")
-        if waiver_gems:
-            df_waiver = pd.DataFrame(waiver_gems)
-            df_waiver = df_waiver.sort_values(['WAR', 'Starter Points'], ascending=[False, False]).head(20)
-            
-            st.dataframe(
-                df_waiver[['Team', 'Player', 'Starter Points', 'WAR']],
-                column_config={
-                    "Starter Points": st.column_config.NumberColumn("Starter Pts", format="%.1f", help="Points scored while in the starting lineup."),
-                    "WAR": st.column_config.NumberColumn("WAR (Wins)", format="%d 🏆", help="Critical Wins created by this player over a bench replacement."),
-                }, use_container_width=True, hide_index=True
-            )
-            
-        if st.button("Recalculate (Reset)"):
-            st.session_state.impact_data = None
-            st.rerun()
+        st.subheader("🎯 Best Draft Picks (WAR)")
+        st.dataframe(pd.DataFrame(st.session_state.impact_data['draft']).sort_values(['WAR', 'Starter Points'], ascending=False).head(20), column_config={"WAR": st.column_config.NumberColumn("WAR", help="Wins Created Above Replacement.")}, use_container_width=True, hide_index=True)
+        st.divider(); st.subheader("🚀 Best Waiver Moves (WAR)")
+        st.dataframe(pd.DataFrame(st.session_state.impact_data['waiver']).sort_values(['WAR', 'Starter Points'], ascending=False).head(20), use_container_width=True, hide_index=True)
+        if st.button("Reset WAR Analysis"): st.session_state.impact_data = None; st.rerun()
 
-# =========================================================
-# PAGE 8: RAW DATA
-# =========================================================
 elif page == "📈 Raw Data":
     st.header("📈 Raw Data Inspector")
-    st.dataframe(
-        df_history, 
-        use_container_width=True,
-        column_config={
-            "Score": st.column_config.NumberColumn("Score", help="Matchup Score"),
-            "Result": st.column_config.TextColumn("Result", help="W/L/T")
-        }
-    )
+    st.dataframe(df_history, use_container_width=True)
